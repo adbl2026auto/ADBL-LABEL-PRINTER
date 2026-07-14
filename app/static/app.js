@@ -8,6 +8,7 @@ const resetButton = document.querySelector("#resetButton");
 const message = document.querySelector("#message");
 const planSection = document.querySelector("#planSection");
 const modeBadge = document.querySelector("#modeBadge");
+const printerBadge = document.querySelector("#printerBadge");
 const sessionStatus = document.querySelector("#sessionStatus");
 
 const countryValue = document.querySelector("#countryValue");
@@ -31,11 +32,37 @@ const invalidList = document.querySelector("#invalidList");
 const print45Button = document.querySelector("#print45Button");
 const printInstruction = document.querySelector("#printInstruction");
 
+const progressBar = document.querySelector("#progressBar");
+const progressText = document.querySelector("#progressText");
+
 const rollDialog = document.querySelector("#rollDialog");
-const confirmRollButton = document.querySelector("#confirmRollButton");
+const confirmRollButton =
+    document.querySelector("#confirmRollButton");
+
+const failureDialog =
+    document.querySelector("#failureDialog");
+
+const failedProduct =
+    document.querySelector("#failedProduct");
+
+const failedFormat =
+    document.querySelector("#failedFormat");
+
+const failedQuantity =
+    document.querySelector("#failedQuantity");
+
+const failedError =
+    document.querySelector("#failedError");
+
+const retryButton =
+    document.querySelector("#retryButton");
+
+const abortButton =
+    document.querySelector("#abortButton");
 
 let lastStatus = null;
 let pollingTimer = null;
+let testMode = true;
 
 
 async function apiRequest(url, options = {}) {
@@ -53,7 +80,8 @@ async function apiRequest(url, options = {}) {
 
     if (!response.ok || data.ok === false) {
         throw new Error(
-            data.error || `Błąd serwera (${response.status}).`
+            data.error ||
+            `Błąd serwera (${response.status}).`
         );
     }
 
@@ -76,12 +104,16 @@ function hideMessage() {
 
 function setLoading(button, loading, loadingText) {
     if (loading) {
-        button.dataset.originalText = button.textContent;
+        button.dataset.originalText =
+            button.textContent;
+
         button.textContent = loadingText;
         button.disabled = true;
     } else {
         button.textContent =
-            button.dataset.originalText || button.textContent;
+            button.dataset.originalText ||
+            button.textContent;
+
         button.disabled = false;
     }
 }
@@ -130,14 +162,19 @@ function renderJobs(tableBody, jobs) {
 }
 
 
-function renderItems(listElement, items, errorMode = false) {
+function renderItems(
+    listElement,
+    items,
+    errorMode = false
+) {
     listElement.innerHTML = "";
 
     for (const entry of items) {
         const item = document.createElement("li");
 
         if (errorMode) {
-            item.textContent = `${entry.product}: ${entry.error}`;
+            item.textContent =
+                `${entry.product}: ${entry.error}`;
         } else {
             item.textContent =
                 `${entry.product} — ${entry.quantity} szt.`;
@@ -164,19 +201,100 @@ function renderPlan(plan) {
     renderJobs(jobs110Table, plan.jobs_45x110);
 
     const skipped = plan.skipped_items || [];
+
     skippedCount.textContent = skipped.length;
     skippedDetails.hidden = skipped.length === 0;
     renderItems(skippedList, skipped);
 
     const invalid = plan.invalid_items || [];
+
     invalidCount.textContent = invalid.length;
     invalidDetails.hidden = invalid.length === 0;
     renderItems(invalidList, invalid, true);
 
     planSection.hidden = false;
     resetButton.hidden = false;
-
     print45Button.disabled = invalid.length > 0;
+}
+
+
+function renderPrinter(printerData) {
+    const selected = printerData?.selected;
+
+    printerBadge.className = "badge printer-badge";
+
+    if (selected) {
+        if (selected.has_warning) {
+            printerBadge.textContent =
+                `Drukarka: ${selected.name} — uwaga`;
+
+            printerBadge.classList.add(
+                "printer-warning"
+            );
+
+            printerBadge.title =
+                selected.warning ||
+                "Drukarka zgłasza ostrzeżenie";
+
+            return;
+        }
+
+        printerBadge.textContent =
+            `Drukarka: ${selected.name}`;
+
+        printerBadge.classList.add(
+            "printer-found"
+        );
+
+        printerBadge.title =
+            `Port: ${selected.port_name}. ` +
+            "Kliknij, aby sprawdzić ponownie.";
+
+        return;
+    }
+
+    if (testMode) {
+        printerBadge.textContent =
+            "Drukarka: niewymagana w teście";
+
+        printerBadge.classList.add(
+            "printer-test"
+        );
+
+        printerBadge.title =
+            "Tryb testowy nie wymaga drukarki.";
+
+        return;
+    }
+
+    printerBadge.textContent =
+        "Drukarka TSC: nieznaleziona";
+
+    printerBadge.classList.add(
+        "printer-missing"
+    );
+
+    printerBadge.title =
+        "Kliknij, aby ponownie wyszukać drukarkę.";
+}
+
+
+function updateProgress(progress) {
+    const safeProgress = progress || {};
+
+    const completed =
+        Number(safeProgress.completed_total || 0);
+
+    const total =
+        Number(safeProgress.total_jobs || 0);
+
+    const percent = total > 0
+        ? Math.min(100, (completed / total) * 100)
+        : 0;
+
+    progressBar.style.width = `${percent}%`;
+    progressText.textContent =
+        `${completed} z ${total} pozycji`;
 }
 
 
@@ -185,13 +303,17 @@ function setSessionStatus(status) {
         no_order: "Brak zamówienia",
         ready: "Gotowe do druku",
         printing_45x45: "Drukowanie 45×45",
-        waiting_for_110: "Oczekiwanie na zmianę rolki",
+        waiting_for_110:
+            "Oczekiwanie na zmianę rolki",
         printing_45x110: "Drukowanie 45×110",
         completed: "Zamówienie zakończone",
         failed: "Błąd drukowania",
+        aborted: "Zamówienie przerwane",
     };
 
-    sessionStatus.textContent = labels[status] || status;
+    sessionStatus.textContent =
+        labels[status] || status;
+
     sessionStatus.className = "status-badge";
 
     if (
@@ -203,8 +325,34 @@ function setSessionStatus(status) {
         sessionStatus.classList.add("waiting");
     } else if (status === "completed") {
         sessionStatus.classList.add("completed");
-    } else if (status === "failed") {
+    } else if (
+        status === "failed" ||
+        status === "aborted"
+    ) {
         sessionStatus.classList.add("failed");
+    }
+}
+
+
+function showFailure(session) {
+    const failedJob = session.failed_job || {};
+
+    failedProduct.textContent =
+        failedJob.product_folder_name || "Nieznany";
+
+    failedFormat.textContent =
+        failedJob.stage || "Nieznany";
+
+    failedQuantity.textContent =
+        failedJob.quantity ?? "—";
+
+    failedError.textContent =
+        failedJob.error ||
+        session.error ||
+        "Nieznany błąd drukowania.";
+
+    if (!failureDialog.open) {
+        failureDialog.showModal();
     }
 }
 
@@ -213,6 +361,7 @@ function updateInterface(session) {
     const status = session.status || "no_order";
 
     setSessionStatus(status);
+    updateProgress(session.progress);
 
     const printing =
         status === "printing_45x45" ||
@@ -225,6 +374,12 @@ function updateInterface(session) {
     confirmRollButton.disabled =
         printing || status !== "waiting_for_110";
 
+    retryButton.disabled =
+        printing || status !== "failed";
+
+    abortButton.disabled =
+        printing || status !== "failed";
+
     if (status === "ready") {
         printInstruction.textContent =
             "Najpierw zostaną wydrukowane wszystkie etykiety 45×45.";
@@ -233,6 +388,10 @@ function updateInterface(session) {
     if (status === "printing_45x45") {
         printInstruction.textContent =
             "Trwa drukowanie etykiet 45×45…";
+
+        if (failureDialog.open) {
+            failureDialog.close();
+        }
     }
 
     if (status === "waiting_for_110") {
@@ -251,6 +410,29 @@ function updateInterface(session) {
         if (rollDialog.open) {
             rollDialog.close();
         }
+
+        if (failureDialog.open) {
+            failureDialog.close();
+        }
+    }
+
+    if (status === "failed") {
+        if (rollDialog.open) {
+            rollDialog.close();
+        }
+
+        printInstruction.textContent =
+            "Drukowanie zatrzymane. Usuń przyczynę błędu i ponów etykietę.";
+
+        showFailure(session);
+
+        if (lastStatus !== "failed") {
+            showMessage(
+                session.error ||
+                "Drukowanie zostało zatrzymane.",
+                "error"
+            );
+        }
     }
 
     if (status === "completed") {
@@ -261,6 +443,10 @@ function updateInterface(session) {
             rollDialog.close();
         }
 
+        if (failureDialog.open) {
+            failureDialog.close();
+        }
+
         if (lastStatus !== "completed") {
             showMessage(
                 "Zamówienie zostało zakończone.",
@@ -269,20 +455,24 @@ function updateInterface(session) {
         }
     }
 
-    if (status === "failed") {
+    if (status === "aborted") {
+        printInstruction.textContent =
+            "Zamówienie zostało przerwane przez operatora.";
+
         if (rollDialog.open) {
             rollDialog.close();
         }
 
-        showMessage(
-            session.error || "Wystąpił błąd drukowania.",
-            "error"
-        );
-    } else if (
-        session.error &&
-        session.error !== message.textContent
-    ) {
-        showMessage(session.error, "error");
+        if (failureDialog.open) {
+            failureDialog.close();
+        }
+
+        if (lastStatus !== "aborted") {
+            showMessage(
+                "Zamówienie zostało przerwane.",
+                "error"
+            );
+        }
     }
 
     lastStatus = status;
@@ -304,6 +494,53 @@ async function refreshStatus() {
 }
 
 
+async function refreshPrinter(showResult = false) {
+    printerBadge.disabled = true;
+    printerBadge.textContent =
+        "Sprawdzanie drukarki…";
+
+    try {
+        const data = await apiRequest(
+            "/api/printer"
+        );
+
+        testMode = Boolean(data.test_mode);
+        renderPrinter(data.printer);
+
+        if (showResult) {
+            if (data.printer.selected) {
+                showMessage(
+                    `Znaleziono drukarkę: ${data.printer.selected.name}`,
+                    "success"
+                );
+            } else if (testMode) {
+                showMessage(
+                    "Nie znaleziono drukarki TSC. W trybie testowym drukarka nie jest wymagana.",
+                    "info"
+                );
+            } else {
+                showMessage(
+                    "Nie znaleziono drukarki TSC MH640/MH641.",
+                    "error"
+                );
+            }
+        }
+    } catch (error) {
+        printerBadge.textContent =
+            "Błąd sprawdzania drukarki";
+
+        printerBadge.className =
+            "badge printer-badge printer-missing";
+
+        if (showResult) {
+            showMessage(error.message, "error");
+        }
+    } finally {
+        printerBadge.disabled = false;
+    }
+}
+
+
 function startPolling() {
     if (pollingTimer !== null) {
         return;
@@ -318,7 +555,8 @@ function startPolling() {
 
 orderFile.addEventListener("change", () => {
     if (orderFile.files.length) {
-        fileName.textContent = orderFile.files[0].name;
+        fileName.textContent =
+            orderFile.files[0].name;
     }
 });
 
@@ -354,12 +592,19 @@ uploadForm.addEventListener("submit", async event => {
     hideMessage();
 
     if (!orderFile.files.length) {
-        showMessage("Wybierz plik zamówienia.", "error");
+        showMessage(
+            "Wybierz plik zamówienia.",
+            "error"
+        );
         return;
     }
 
     const formData = new FormData();
-    formData.append("file", orderFile.files[0]);
+
+    formData.append(
+        "file",
+        orderFile.files[0]
+    );
 
     setLoading(
         analyzeButton,
@@ -379,6 +624,10 @@ uploadForm.addEventListener("submit", async event => {
         renderPlan(data.plan);
         updateInterface(data.session);
 
+        if (data.printer) {
+            renderPrinter(data.printer);
+        }
+
         showMessage(
             "Zamówienie zostało poprawnie przeanalizowane.",
             "success"
@@ -396,8 +645,11 @@ uploadForm.addEventListener("submit", async event => {
 print45Button.addEventListener("click", async () => {
     hideMessage();
 
-    print45Button.disabled = true;
-    print45Button.textContent = "Uruchamianie…";
+    setLoading(
+        print45Button,
+        true,
+        "Uruchamianie…"
+    );
 
     try {
         await apiRequest(
@@ -413,34 +665,72 @@ print45Button.addEventListener("click", async () => {
         await refreshStatus();
     } catch (error) {
         showMessage(error.message, "error");
-        print45Button.disabled = false;
     } finally {
-        print45Button.textContent = "Drukuj 45×45";
+        setLoading(print45Button, false);
     }
 });
 
 
-confirmRollButton.addEventListener("click", async () => {
+confirmRollButton.addEventListener(
+    "click",
+    async () => {
+        hideMessage();
+
+        setLoading(
+            confirmRollButton,
+            true,
+            "Uruchamianie druku…"
+        );
+
+        try {
+            await apiRequest(
+                "/api/print/45x110",
+                { method: "POST" }
+            );
+
+            if (rollDialog.open) {
+                rollDialog.close();
+            }
+
+            showMessage(
+                "Rozpoczęto drukowanie etykiet 45×110.",
+                "info"
+            );
+
+            await refreshStatus();
+        } catch (error) {
+            showMessage(error.message, "error");
+        } finally {
+            setLoading(
+                confirmRollButton,
+                false
+            );
+        }
+    }
+);
+
+
+retryButton.addEventListener("click", async () => {
     hideMessage();
 
     setLoading(
-        confirmRollButton,
+        retryButton,
         true,
-        "Uruchamianie druku…"
+        "Ponawianie…"
     );
 
     try {
         await apiRequest(
-            "/api/print/45x110",
+            "/api/print/retry",
             { method: "POST" }
         );
 
-        if (rollDialog.open) {
-            rollDialog.close();
+        if (failureDialog.open) {
+            failureDialog.close();
         }
 
         showMessage(
-            "Rozpoczęto drukowanie etykiet 45×110.",
+            "Ponowiono drukowanie od błędnej etykiety.",
             "info"
         );
 
@@ -448,7 +738,40 @@ confirmRollButton.addEventListener("click", async () => {
     } catch (error) {
         showMessage(error.message, "error");
     } finally {
-        setLoading(confirmRollButton, false);
+        setLoading(retryButton, false);
+    }
+});
+
+
+abortButton.addEventListener("click", async () => {
+    hideMessage();
+
+    setLoading(
+        abortButton,
+        true,
+        "Przerywanie…"
+    );
+
+    try {
+        const data = await apiRequest(
+            "/api/print/abort",
+            { method: "POST" }
+        );
+
+        if (failureDialog.open) {
+            failureDialog.close();
+        }
+
+        updateInterface(data.session);
+
+        showMessage(
+            "Zamówienie zostało przerwane.",
+            "error"
+        );
+    } catch (error) {
+        showMessage(error.message, "error");
+    } finally {
+        setLoading(abortButton, false);
     }
 });
 
@@ -464,14 +787,22 @@ resetButton.addEventListener("click", async () => {
             rollDialog.close();
         }
 
+        if (failureDialog.open) {
+            failureDialog.close();
+        }
+
         uploadForm.reset();
+
         fileName.textContent =
             "lub przeciągnij go w to miejsce";
 
         planSection.hidden = true;
         resetButton.hidden = true;
-        hideMessage();
 
+        progressBar.style.width = "0%";
+        progressText.textContent = "0 z 0 pozycji";
+
+        hideMessage();
         lastStatus = null;
     } catch (error) {
         showMessage(error.message, "error");
@@ -479,19 +810,33 @@ resetButton.addEventListener("click", async () => {
 });
 
 
+printerBadge.addEventListener("click", () => {
+    refreshPrinter(true);
+});
+
+
 async function loadConfiguration() {
     try {
-        const config = await apiRequest("/api/config");
+        const config = await apiRequest(
+            "/api/config"
+        );
 
-        if (config.test_mode) {
+        testMode = Boolean(config.test_mode);
+
+        if (testMode) {
             modeBadge.textContent =
                 "TRYB TESTOWY — bez drukowania";
+
             modeBadge.className = "badge test";
         } else {
             modeBadge.textContent =
                 "TRYB PRODUKCYJNY";
-            modeBadge.className = "badge production";
+
+            modeBadge.className =
+                "badge production";
         }
+
+        renderPrinter(config.printer);
 
         if (!config.etilabel_found) {
             showMessage(
@@ -500,7 +845,9 @@ async function loadConfiguration() {
             );
         }
     } catch (error) {
-        modeBadge.textContent = "Błąd konfiguracji";
+        modeBadge.textContent =
+            "Błąd konfiguracji";
+
         modeBadge.className = "badge test";
         showMessage(error.message, "error");
     }

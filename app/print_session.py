@@ -1,239 +1,387 @@
 from __future__ import annotations
 
 import threading
-import uuid
-from dataclasses import asdict, dataclass
-from enum import StrEnum
-
-from app.etilabel_controller import (
-    EtilabelController,
-    PrintResult,
-)
-from app.label_catalog import LabelJob, PrintPlan
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any
 
 
-class PrintSessionError(Exception):
-    """Błąd stanu sesji drukowania."""
+class PrintSessionError(RuntimeError):
+    pass
 
+def _friendly_error(error: Exception) -> str:
+    technical_error = str(error)
+    normalized = technical_error.casefold()
 
-class SessionStatus(StrEnum):
+    if "not a valid window handle" in normalized:
+        return (
+            "Okno programu ETILABEL zostało zamknięte "
+            "lub przestało odpowiadać."
+        )
+
+    if "tnewprintdlg" in normalized:
+        return (
+            "Nie udało się otworzyć okna drukowania "
+            "w programie ETILABEL."
+        )
+
+    if "tnewmainform" in normalized:
+        return (
+            "Nie udało się otworzyć głównego okna "
+            "programu ETILABEL."
+        )
+
+    if "timeout" in normalized:
+        return (
+            "Program ETILABEL nie odpowiedział "
+            "w wymaganym czasie."
+        )
+
+    if "printer" in normalized and "offline" in normalized:
+        return "Drukarka jest niedostępna lub offline."
+
+    return technical_error
+
+class SessionStatus(str, Enum):
     READY = "ready"
     PRINTING_45X45 = "printing_45x45"
     WAITING_FOR_110 = "waiting_for_110"
     PRINTING_45X110 = "printing_45x110"
     COMPLETED = "completed"
     FAILED = "failed"
+    ABORTED = "aborted"
 
 
 @dataclass(frozen=True)
 class CompletedJob:
-    product_name: str
+    stage: str
     product_folder_name: str
-    label_format: str
-    quantity: int
     label_path: str
-    printed: bool
-    message: str
+    quantity: int
+    result: str
+
+
+@dataclass(frozen=True)
+class FailedJob:
+    stage: str
+    product_folder_name: str
+    label_path: str
+    quantity: int
+    error: str
 
 
 class PrintSession:
     def __init__(
         self,
-        plan: PrintPlan,
-        controller: EtilabelController,
+        plan,
+        controller,
         test_mode: bool = True,
-    ):
-        self.session_id = str(uuid.uuid4())
+    ) -> None:
         self.plan = plan
         self.controller = controller
-        self.test_mode = test_mode
-
-        self.status = SessionStatus.READY
-        self.current_job: LabelJob | None = None
-        self.current_job_number = 0
-        self.current_stage_total = 0
-
-        self.completed_jobs: list[CompletedJob] = []
-        self.error: str | None = None
+        self.test_mode = bool(test_mode)
 
         self._lock = threading.RLock()
 
+        self._status = SessionStatus.READY
+        self._completed_jobs: list[CompletedJob] = []
+
+        self._next_45x45_index = 0
+        self._next_45x110_index = 0
+
+        self._failed_job_object = None
+        self._failed_stage: str | None = None
+        self._failed_job: FailedJob | None = None
+        self._last_error: str | None = None
+
+    @property
+    def status(self) -> SessionStatus:
+        with self._lock:
+            return self._status
+
     def print_45x45(self) -> None:
         with self._lock:
-            if self.status != SessionStatus.READY:
+            if self._status != SessionStatus.READY:
                 raise PrintSessionError(
-                    "Drukowanie 45x45 można rozpocząć "
-                    "wyłącznie dla nowej sesji."
+                    "Etap 45x45 można rozpocząć tylko "
+                    "dla nowej, gotowej sesji."
                 )
 
-            self.status = SessionStatus.PRINTING_45X45
-            self.current_job_number = 0
-            self.current_stage_total = len(
-                self.plan.jobs_45x45
-            )
-            self.error = None
+            self._status = SessionStatus.PRINTING_45X45
+            self._clear_failure()
 
-        try:
-            self._execute_jobs(
-                self.plan.jobs_45x45
-            )
-
-            with self._lock:
-                self.current_job = None
-
-                if self.plan.jobs_45x110:
-                    self.status = (
-                        SessionStatus.WAITING_FOR_110
-                    )
-                else:
-                    self.status = (
-                        SessionStatus.COMPLETED
-                    )
-
-        except Exception as error:
-            self._mark_failed(error)
-            raise
+        self._execute_stage("45x45")
 
     def print_45x110(self) -> None:
         with self._lock:
             if (
-                self.status
+                self._status
                 != SessionStatus.WAITING_FOR_110
             ):
                 raise PrintSessionError(
-                    "Drukowanie 45x110 można rozpocząć "
-                    "dopiero po zakończeniu etapu 45x45."
+                    "Etap 45x110 można rozpocząć "
+                    "dopiero po zakończeniu etapu "
+                    "45x45 i zmianie rolki."
                 )
 
-            self.status = (
+            self._status = (
                 SessionStatus.PRINTING_45X110
             )
-            self.current_job_number = 0
-            self.current_stage_total = len(
-                self.plan.jobs_45x110
-            )
-            self.error = None
+            self._clear_failure()
 
-        try:
-            self._execute_jobs(
-                self.plan.jobs_45x110
-            )
+        self._execute_stage("45x110")
 
+    def retry_failed_job(self) -> None:
+        with self._lock:
+            if self._status != SessionStatus.FAILED:
+                raise PrintSessionError(
+                    "Brak nieudanego zadania do "
+                    "ponowienia."
+                )
+
+            if (
+                self._failed_job_object is None
+                or self._failed_stage is None
+            ):
+                raise PrintSessionError(
+                    "Nie udało się odtworzyć "
+                    "informacji o błędnej etykiecie."
+                )
+
+            failed_stage = self._failed_stage
+
+            if failed_stage == "45x45":
+                self._status = (
+                    SessionStatus.PRINTING_45X45
+                )
+            elif failed_stage == "45x110":
+                self._status = (
+                    SessionStatus.PRINTING_45X110
+                )
+            else:
+                raise PrintSessionError(
+                    "Nieznany etap błędnego zadania."
+                )
+
+            self._last_error = None
+            self._failed_job = None
+
+        # Indeks nie został zwiększony po błędzie.
+        # Dzięki temu wykonanie zacznie się od
+        # dokładnie tej samej etykiety.
+        self._execute_stage(failed_stage)
+
+    def abort(self) -> None:
+        with self._lock:
+            if self._status not in {
+                SessionStatus.FAILED,
+                SessionStatus.READY,
+                SessionStatus.WAITING_FOR_110,
+            }:
+                raise PrintSessionError(
+                    "Nie można przerwać sesji podczas "
+                    "aktywnego sterowania programem "
+                    "ETILABEL."
+                )
+
+            self._status = SessionStatus.ABORTED
+            self._failed_job_object = None
+            self._failed_stage = None
+            self._failed_job = None
+
+    def _execute_stage(self, stage: str) -> None:
+        jobs = self._jobs_for_stage(stage)
+
+        while True:
             with self._lock:
-                self.current_job = None
-                self.status = SessionStatus.COMPLETED
+                current_index = self._index_for_stage(
+                    stage
+                )
 
-        except Exception as error:
-            self._mark_failed(error)
-            raise
+                if current_index >= len(jobs):
+                    self._finish_stage(stage)
+                    return
 
-    def _execute_jobs(
-        self,
-        jobs: list[LabelJob],
-    ) -> None:
-        for job_number, job in enumerate(
-            jobs,
-            start=1,
-        ):
-            with self._lock:
-                self.current_job = job
-                self.current_job_number = job_number
+                job = jobs[current_index]
 
-            result = self.controller.print_label(
-                label_path=job.label_path,
-                quantity=job.quantity,
-                test_mode=self.test_mode,
-            )
+            try:
+                result = self.controller.print_label(
+                    label_path=job.label_path,
+                    quantity=job.quantity,
+                    test_mode=self.test_mode,
+                )
+            except Exception as exc:
+                self._record_failure(
+                    stage=stage,
+                    job=job,
+                    error=exc,
+                )
 
-            self._record_result(
+                raise PrintSessionError(
+                    f"Nie udało się wydrukować "
+                    f"etykiety "
+                    f"'{job.product_folder_name}': "
+                    f"{exc}"
+                ) from exc
+
+            self._record_success(
+                stage=stage,
                 job=job,
                 result=result,
             )
 
-    def _record_result(
-        self,
-        job: LabelJob,
-        result: PrintResult,
-    ) -> None:
-        completed_job = CompletedJob(
-            product_name=job.product_name,
-            product_folder_name=(
-                job.product_folder_name
-            ),
-            label_format=job.label_format,
-            quantity=job.quantity,
-            label_path=str(job.label_path),
-            printed=result.printed,
-            message=result.message,
+    def _jobs_for_stage(self, stage: str):
+        if stage == "45x45":
+            return self.plan.jobs_45x45
+
+        if stage == "45x110":
+            return self.plan.jobs_45x110
+
+        raise PrintSessionError(
+            f"Nieznany etap druku: {stage}"
         )
 
-        with self._lock:
-            self.completed_jobs.append(
-                completed_job
-            )
+    def _index_for_stage(self, stage: str) -> int:
+        if stage == "45x45":
+            return self._next_45x45_index
 
-    def _mark_failed(
+        if stage == "45x110":
+            return self._next_45x110_index
+
+        raise PrintSessionError(
+            f"Nieznany etap druku: {stage}"
+        )
+
+    def _increase_stage_index(
         self,
-        error: Exception,
+        stage: str,
+    ) -> None:
+        if stage == "45x45":
+            self._next_45x45_index += 1
+            return
+
+        if stage == "45x110":
+            self._next_45x110_index += 1
+            return
+
+        raise PrintSessionError(
+            f"Nieznany etap druku: {stage}"
+        )
+
+    def _record_success(
+        self,
+        stage: str,
+        job,
+        result: Any,
     ) -> None:
         with self._lock:
-            self.status = SessionStatus.FAILED
-            self.error = str(error)
-            self.current_job = None
+            self._completed_jobs.append(
+                CompletedJob(
+                    stage=stage,
+                    product_folder_name=(
+                        job.product_folder_name
+                    ),
+                    label_path=str(job.label_path),
+                    quantity=int(job.quantity),
+                    result=str(result),
+                )
+            )
 
-    def snapshot(self) -> dict:
+            self._increase_stage_index(stage)
+            self._clear_failure()
+
+    def _record_failure(
+        self,
+        stage: str,
+        job,
+        error: Exception,
+    ) -> None:
+        error_text = _friendly_error(error)
+
         with self._lock:
-            current_job = None
+            self._failed_job_object = job
+            self._failed_stage = stage
+            self._last_error = error_text
 
-            if self.current_job is not None:
-                current_job = {
-                    "product_name": (
-                        self.current_job.product_name
-                    ),
-                    "product_folder_name": (
-                        self.current_job
-                        .product_folder_name
-                    ),
-                    "label_format": (
-                        self.current_job.label_format
-                    ),
-                    "quantity": (
-                        self.current_job.quantity
-                    ),
-                }
+            self._failed_job = FailedJob(
+                stage=stage,
+                product_folder_name=(
+                    job.product_folder_name
+                ),
+                label_path=str(job.label_path),
+                quantity=int(job.quantity),
+                error=error_text,
+            )
+
+            self._status = SessionStatus.FAILED
+
+    def _clear_failure(self) -> None:
+        self._failed_job_object = None
+        self._failed_stage = None
+        self._failed_job = None
+        self._last_error = None
+
+    def _finish_stage(self, stage: str) -> None:
+        with self._lock:
+            self._clear_failure()
+
+            if stage == "45x45":
+                self._status = (
+                    SessionStatus.WAITING_FOR_110
+                )
+                return
+
+            if stage == "45x110":
+                self._status = (
+                    SessionStatus.COMPLETED
+                )
+                return
+
+            raise PrintSessionError(
+                f"Nieznany etap druku: {stage}"
+            )
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            total_45x45 = len(
+                self.plan.jobs_45x45
+            )
+            total_45x110 = len(
+                self.plan.jobs_45x110
+            )
+
+            completed_45x45 = (
+                self._next_45x45_index
+            )
+            completed_45x110 = (
+                self._next_45x110_index
+            )
 
             return {
-                "session_id": self.session_id,
-                "status": self.status.value,
-                "country": self.plan.country,
+                "status": self._status.value,
                 "test_mode": self.test_mode,
-                "current_job": current_job,
-                "current_job_number": (
-                    self.current_job_number
+                "error": self._last_error,
+                "failed_job": self._failed_job,
+                "completed_jobs": list(
+                    self._completed_jobs
                 ),
-                "current_stage_total": (
-                    self.current_stage_total
-                ),
-                "totals": {
-                    "jobs_45x45": len(
-                        self.plan.jobs_45x45
+                "progress": {
+                    "completed_45x45": (
+                        completed_45x45
                     ),
-                    "labels_45x45": (
-                        self.plan.total_45x45
+                    "total_45x45": total_45x45,
+                    "completed_45x110": (
+                        completed_45x110
                     ),
-                    "jobs_45x110": len(
-                        self.plan.jobs_45x110
+                    "total_45x110": total_45x110,
+                    "completed_total": (
+                        completed_45x45
+                        + completed_45x110
                     ),
-                    "labels_45x110": (
-                        self.plan.total_45x110
-                    ),
-                    "labels_all": (
-                        self.plan.total_labels
+                    "total_jobs": (
+                        total_45x45
+                        + total_45x110
                     ),
                 },
-                "completed_jobs": [
-                    asdict(job)
-                    for job in self.completed_jobs
-                ],
-                "error": self.error,
             }

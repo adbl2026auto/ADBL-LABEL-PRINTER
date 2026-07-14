@@ -21,8 +21,19 @@
             <h1>Label Printer</h1>
         </div>
 
-        <div id="modeBadge" class="badge">
-            Sprawdzanie konfiguracji…
+        <div class="topbar-status">
+            <div id="modeBadge" class="badge">
+                Sprawdzanie trybu…
+            </div>
+
+            <button
+                id="printerBadge"
+                class="badge printer-badge"
+                type="button"
+                title="Kliknij, aby ponownie sprawdzić drukarkę"
+            >
+                Sprawdzanie drukarki…
+            </button>
         </div>
     </header>
 
@@ -59,12 +70,15 @@
                     >
 
                     <span class="drop-icon">↓</span>
+
                     <strong>
                         Wybierz plik Excel z zamówieniem
                     </strong>
+
                     <span id="fileName">
                         lub przeciągnij go w to miejsce
                     </span>
+
                     <small>
                         Obsługiwane formaty: XLSX, XLSM
                     </small>
@@ -131,11 +145,15 @@
                 <article class="label-group">
                     <div class="group-title">
                         <div>
-                            <span class="format-mark format-45"></span>
+                            <span
+                                class="format-mark format-45"
+                            ></span>
                             <h3>Etykiety 45×45</h3>
                         </div>
 
-                        <strong id="jobCount45">0 pozycji</strong>
+                        <strong id="jobCount45">
+                            0 pozycji
+                        </strong>
                     </div>
 
                     <div class="table-wrapper">
@@ -154,11 +172,15 @@
                 <article class="label-group">
                     <div class="group-title">
                         <div>
-                            <span class="format-mark format-110"></span>
+                            <span
+                                class="format-mark format-110"
+                            ></span>
                             <h3>Etykiety 45×110</h3>
                         </div>
 
-                        <strong id="jobCount110">0 pozycji</strong>
+                        <strong id="jobCount110">
+                            0 pozycji
+                        </strong>
                     </div>
 
                     <div class="table-wrapper">
@@ -198,14 +220,32 @@
             </details>
 
             <div class="print-panel">
-                <div>
+                <div class="print-description">
                     <span class="step-number">3</span>
+
                     <div>
                         <h2>Rozpocznij drukowanie</h2>
+
                         <p id="printInstruction">
                             Najpierw zostaną wydrukowane
                             wszystkie etykiety 45×45.
                         </p>
+
+                        <div
+                            id="progressContainer"
+                            class="progress-container"
+                        >
+                            <div class="progress-track">
+                                <div
+                                    id="progressBar"
+                                    class="progress-bar"
+                                ></div>
+                            </div>
+
+                            <span id="progressText">
+                                0 z 0 pozycji
+                            </span>
+                        </div>
                     </div>
                 </div>
 
@@ -244,6 +284,65 @@
             >
                 Rolka 45×110 założona — drukuj
             </button>
+        </div>
+    </dialog>
+
+    <dialog id="failureDialog" class="failure-dialog">
+        <div class="dialog-content">
+            <div class="failure-icon">!</div>
+
+            <h2>Drukowanie zostało zatrzymane</h2>
+
+            <p>
+                Nie udało się wykonać poniższego
+                zadania:
+            </p>
+
+            <div class="failure-details">
+                <div>
+                    <span>Produkt</span>
+                    <strong id="failedProduct">—</strong>
+                </div>
+
+                <div>
+                    <span>Format</span>
+                    <strong id="failedFormat">—</strong>
+                </div>
+
+                <div>
+                    <span>Liczba etykiet</span>
+                    <strong id="failedQuantity">—</strong>
+                </div>
+            </div>
+
+            <div
+                id="failedError"
+                class="failure-error"
+            ></div>
+
+            <p>
+                Usuń przyczynę błędu i kliknij
+                „Ponów”. Wcześniejsze etykiety nie
+                zostaną wydrukowane ponownie.
+            </p>
+
+            <div class="dialog-actions">
+                <button
+                    id="abortButton"
+                    class="button button-secondary"
+                    type="button"
+                >
+                    Przerwij zamówienie
+                </button>
+
+                <button
+                    id="retryButton"
+                    class="button button-print"
+                    type="button"
+                >
+                    Ponów etykietę
+                </button>
+            </div>
         </div>
     </dialog>
 

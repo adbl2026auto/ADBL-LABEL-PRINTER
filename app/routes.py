@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -15,13 +14,17 @@ from flask import (
     render_template,
     request,
 )
-from werkzeug.utils import secure_filename
 
 from app.etilabel_controller import (
     EtilabelController,
 )
 from app.label_catalog import build_print_plan
 from app.order_reader import read_order
+from app.printer_detector import (
+    PrinterDetectionError,
+    detect_label_printer,
+    require_label_printer,
+)
 from app.print_session import PrintSession
 
 
@@ -36,13 +39,13 @@ _worker_thread: threading.Thread | None = None
 _last_error: str | None = None
 
 
-def _status_value(value: Any) -> Any:
+def _serialize(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
 
     if is_dataclass(value):
         return {
-            key: _status_value(item)
+            key: _serialize(item)
             for key, item in asdict(value).items()
         }
 
@@ -51,13 +54,13 @@ def _status_value(value: Any) -> Any:
 
     if isinstance(value, dict):
         return {
-            str(key): _status_value(item)
+            str(key): _serialize(item)
             for key, item in value.items()
         }
 
     if isinstance(value, (list, tuple)):
         return [
-            _status_value(item)
+            _serialize(item)
             for item in value
         ]
 
@@ -105,7 +108,10 @@ def _skipped_to_dict(skipped) -> dict[str, Any]:
         "reason": getattr(
             skipped,
             "reason",
-            "Brak folderu produktu – etykieta nie jest wymagana.",
+            (
+                "Brak folderu produktu – "
+                "etykieta nie jest wymagana."
+            ),
         ),
     }
 
@@ -139,6 +145,7 @@ def _plan_to_dict(plan) -> dict[str, Any]:
         _job_to_dict(job)
         for job in plan.jobs_45x45
     ]
+
     jobs_110 = [
         _job_to_dict(job)
         for job in plan.jobs_45x110
@@ -148,6 +155,7 @@ def _plan_to_dict(plan) -> dict[str, Any]:
         _skipped_to_dict(item)
         for item in plan.skipped_items
     ]
+
     invalid = [
         _invalid_to_dict(item)
         for item in plan.invalid_items
@@ -211,6 +219,54 @@ def _find_etilabel() -> Path:
     )
 
 
+def _printer_snapshot() -> dict[str, Any]:
+    try:
+        result = detect_label_printer()
+
+        return {
+            "ok": True,
+            "found": result.selected is not None,
+            "selected": (
+                result.selected.to_dict()
+                if result.selected
+                else None
+            ),
+            "matching_printers": [
+                printer.to_dict()
+                for printer
+                in result.matching_printers
+            ],
+            "all_printers": [
+                printer.to_dict()
+                for printer in result.all_printers
+            ],
+            "error": None,
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "found": False,
+            "selected": None,
+            "matching_printers": [],
+            "all_printers": [],
+            "error": str(exc),
+        }
+
+
+def _require_printer_for_production() -> None:
+    if current_app.config["TEST_MODE"]:
+        return
+
+    printer = require_label_printer()
+
+    if printer.has_warning:
+        raise PrinterDetectionError(
+            f"Drukarka '{printer.name}' "
+            f"nie jest gotowa: {printer.warning}."
+        )
+
+
 def _session_snapshot() -> dict[str, Any]:
     with _state_lock:
         session = _current_session
@@ -222,18 +278,21 @@ def _session_snapshot() -> dict[str, Any]:
             "status": "no_order",
             "error": error,
             "worker_running": False,
+            "test_mode": bool(
+                current_app.config["TEST_MODE"]
+            ),
         }
 
-    snapshot = _status_value(
-        session.snapshot()
-    )
+    snapshot = _serialize(session.snapshot())
 
     snapshot["error"] = (
-        error or snapshot.get("error")
+        snapshot.get("error") or error
     )
+
     snapshot["worker_running"] = bool(
         worker and worker.is_alive()
     )
+
     snapshot["test_mode"] = bool(
         current_app.config["TEST_MODE"]
     )
@@ -241,7 +300,7 @@ def _session_snapshot() -> dict[str, Any]:
     return snapshot
 
 
-def _run_print_stage(stage: str) -> None:
+def _run_worker(action: str) -> None:
     global _last_error
 
     with _state_lock:
@@ -255,21 +314,29 @@ def _run_print_stage(stage: str) -> None:
         return
 
     try:
-        if stage == "45x45":
+        if action == "45x45":
             session.print_45x45()
-        elif stage == "45x110":
+
+        elif action == "45x110":
             session.print_45x110()
+
+        elif action == "retry":
+            session.retry_failed_job()
+
         else:
             raise RuntimeError(
-                f"Nieznany etap druku: {stage}"
+                f"Nieznana operacja: {action}"
             )
+
+        with _state_lock:
+            _last_error = None
 
     except Exception as exc:
         with _state_lock:
             _last_error = str(exc)
 
 
-def _start_worker(stage: str) -> None:
+def _start_worker(action: str) -> None:
     global _worker_thread
     global _last_error
 
@@ -285,12 +352,31 @@ def _start_worker(stage: str) -> None:
         _last_error = None
 
         _worker_thread = threading.Thread(
-            target=_run_print_stage,
-            args=(stage,),
-            name=f"label-print-{stage}",
+            target=_run_worker,
+            args=(action,),
+            name=f"label-print-{action}",
             daemon=True,
         )
+
         _worker_thread.start()
+
+
+def _safe_uploaded_filename(
+    uploaded_name: str,
+) -> str:
+    normalized_name = uploaded_name.replace(
+        "\\",
+        "/",
+    )
+
+    filename = Path(normalized_name).name
+
+    if not filename:
+        raise RuntimeError(
+            "Nieprawidłowa nazwa pliku."
+        )
+
+    return filename
 
 
 @main.get("/")
@@ -309,6 +395,7 @@ def get_config():
 
     return jsonify(
         {
+            "ok": True,
             "labels_root": current_app.config[
                 "LABELS_ROOT"
             ],
@@ -317,6 +404,20 @@ def get_config():
             "test_mode": bool(
                 current_app.config["TEST_MODE"]
             ),
+            "printer": _printer_snapshot(),
+        }
+    )
+
+
+@main.get("/api/printer")
+def get_printer():
+    return jsonify(
+        {
+            "ok": True,
+            "test_mode": bool(
+                current_app.config["TEST_MODE"]
+            ),
+            "printer": _printer_snapshot(),
         }
     )
 
@@ -361,23 +462,29 @@ def analyze_order():
             }
         ), 400
 
-    safe_name = secure_filename(
-        uploaded_file.filename
-    )
-
-    if not safe_name:
-        safe_name = f"order{extension}"
-
-    unique_name = (
-        f"{uuid.uuid4().hex}_{safe_name}"
-    )
-
-    destination = (
-        Path(current_app.config["UPLOAD_FOLDER"])
-        / unique_name
-    )
+    destination = None
 
     try:
+        original_filename = (
+            _safe_uploaded_filename(
+                uploaded_file.filename
+            )
+        )
+
+        unique_name = (
+            f"{uuid.uuid4().hex}_"
+            f"{original_filename}"
+        )
+
+        destination = (
+            Path(
+                current_app.config[
+                    "UPLOAD_FOLDER"
+                ]
+            )
+            / unique_name
+        )
+
         uploaded_file.save(destination)
 
         order = read_order(destination)
@@ -388,8 +495,6 @@ def analyze_order():
         )
 
         if plan.invalid_items:
-            plan_data = _plan_to_dict(plan)
-
             return jsonify(
                 {
                     "ok": False,
@@ -398,7 +503,7 @@ def analyze_order():
                         "których nie można przygotować "
                         "do druku."
                     ),
-                    "plan": plan_data,
+                    "plan": _plan_to_dict(plan),
                 }
             ), 422
 
@@ -438,17 +543,23 @@ def analyze_order():
         return jsonify(
             {
                 "ok": True,
-                "filename": uploaded_file.filename,
+                "filename": (
+                    uploaded_file.filename
+                ),
                 "plan": _plan_to_dict(plan),
                 "session": _session_snapshot(),
+                "printer": _printer_snapshot(),
             }
         )
 
     except Exception as exc:
-        try:
-            destination.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if destination is not None:
+            try:
+                destination.unlink(
+                    missing_ok=True
+                )
+            except OSError:
+                pass
 
         return jsonify(
             {
@@ -461,20 +572,27 @@ def analyze_order():
 @main.post("/api/print/45x45")
 def print_45x45():
     with _state_lock:
-        if _current_session is None:
-            return jsonify(
-                {
-                    "ok": False,
-                    "error": (
-                        "Najpierw wgraj i "
-                        "przeanalizuj zamówienie."
-                    ),
-                }
-            ), 400
+        session = _current_session
+
+    if session is None:
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "Najpierw wgraj i "
+                    "przeanalizuj zamówienie."
+                ),
+            }
+        ), 400
 
     try:
+        _require_printer_for_production()
         _start_worker("45x45")
-    except RuntimeError as exc:
+
+    except (
+        RuntimeError,
+        PrinterDetectionError,
+    ) as exc:
         return jsonify(
             {
                 "ok": False,
@@ -508,12 +626,14 @@ def print_45x110():
             }
         ), 400
 
-    snapshot = _status_value(
+    snapshot = _serialize(
         session.snapshot()
     )
-    status = snapshot.get("status")
 
-    if status != "waiting_for_110":
+    if (
+        snapshot.get("status")
+        != "waiting_for_110"
+    ):
         return jsonify(
             {
                 "ok": False,
@@ -522,13 +642,18 @@ def print_45x110():
                     "dopiero po zakończeniu etapu "
                     "45x45."
                 ),
-                "status": status,
+                "status": snapshot.get("status"),
             }
         ), 409
 
     try:
+        _require_printer_for_production()
         _start_worker("45x110")
-    except RuntimeError as exc:
+
+    except (
+        RuntimeError,
+        PrinterDetectionError,
+    ) as exc:
         return jsonify(
             {
                 "ok": False,
@@ -544,6 +669,99 @@ def print_45x110():
             ),
         }
     ), 202
+
+
+@main.post("/api/print/retry")
+def retry_failed_print():
+    with _state_lock:
+        session = _current_session
+
+    if session is None:
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "Nie ma aktywnego zamówienia."
+                ),
+            }
+        ), 400
+
+    snapshot = _serialize(
+        session.snapshot()
+    )
+
+    if snapshot.get("status") != "failed":
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "Brak błędnej etykiety "
+                    "do ponowienia."
+                ),
+            }
+        ), 409
+
+    try:
+        _require_printer_for_production()
+        _start_worker("retry")
+
+    except (
+        RuntimeError,
+        PrinterDetectionError,
+    ) as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(exc),
+            }
+        ), 409
+
+    return jsonify(
+        {
+            "ok": True,
+            "message": (
+                "Ponowiono drukowanie od "
+                "błędnej etykiety."
+            ),
+        }
+    ), 202
+
+
+@main.post("/api/print/abort")
+def abort_print():
+    with _state_lock:
+        session = _current_session
+
+    if session is None:
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "Nie ma aktywnego zamówienia."
+                ),
+            }
+        ), 400
+
+    try:
+        session.abort()
+
+    except RuntimeError as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(exc),
+            }
+        ), 409
+
+    return jsonify(
+        {
+            "ok": True,
+            "message": (
+                "Zamówienie zostało przerwane."
+            ),
+            "session": _session_snapshot(),
+        }
+    )
 
 
 @main.get("/api/status")

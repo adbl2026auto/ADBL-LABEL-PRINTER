@@ -701,4 +701,169 @@ dialog::backdrop {
         width: min(100% - 20px, 1180px);
         margin-top: 20px;
     }
+
+    .topbar-status {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-left: 0 !important;
+}
+
+.topbar-status::before {
+    display: none !important;
+}
+
+.printer-badge {
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.printer-found {
+    color: var(--orange);
+    border-color: var(--orange);
+    background: rgba(255, 77, 10, 0.12);
+}
+
+.printer-test {
+    color: #b0b0b0;
+    border-color: #555555;
+    background: #1d1d1d;
+}
+
+.printer-warning {
+    color: #ffc13d;
+    border-color: var(--yellow);
+    background: rgba(255, 176, 0, 0.12);
+}
+
+.printer-missing {
+    color: #ff6868;
+    border-color: var(--red);
+    background: rgba(238, 61, 61, 0.13);
+}
+
+.print-description {
+    flex: 1;
+}
+
+.progress-container {
+    width: min(460px, 100%);
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.progress-track {
+    height: 7px;
+    flex: 1;
+    overflow: hidden;
+    background: #333333;
+}
+
+.progress-bar {
+    width: 0;
+    height: 100%;
+    background: var(--orange);
+    transition: width 250ms ease;
+}
+
+.progress-container span {
+    min-width: 90px;
+    color: #aaaaaa;
+    font-size: 12px;
+    font-weight: 750;
+    text-align: right;
+}
+
+.failure-dialog {
+    border-top-color: var(--red);
+}
+
+.failure-icon {
+    width: 60px;
+    height: 60px;
+    margin: 0 auto 19px;
+    display: grid;
+    place-items: center;
+    background: var(--red);
+    color: white;
+    font-size: 32px;
+    font-weight: 950;
+}
+
+.failure-details {
+    margin: 20px 0;
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    background: #1d1d1d;
+    border: 1px solid #3b3b3b;
+}
+
+.failure-details > div {
+    padding: 14px;
+    border-right: 1px solid #3b3b3b;
+    text-align: left;
+}
+
+.failure-details > div:last-child {
+    border-right: 0;
+}
+
+.failure-details span {
+    display: block;
+    margin-bottom: 5px;
+    color: #888888;
+    font-size: 11px;
+    text-transform: uppercase;
+}
+
+.failure-details strong {
+    color: white;
+}
+
+.failure-error {
+    margin-bottom: 18px;
+    padding: 13px;
+    color: #ff8585;
+    background: #261313;
+    border-left: 4px solid var(--red);
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 11px;
+    margin-top: 18px;
+}
+
+.dialog-actions .button {
+    width: 100%;
+    margin-top: 0;
+}
+
+@media (max-width: 800px) {
+    .topbar-status,
+    .progress-container {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .failure-details,
+    .dialog-actions {
+        grid-template-columns: 1fr;
+    }
+
+    .failure-details > div {
+        border-right: 0;
+        border-bottom: 1px solid #3b3b3b;
+    }
+
+    .failure-details > div:last-child {
+        border-bottom: 0;
+    }
+}
 }
