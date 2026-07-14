@@ -31,3 +31,6 @@ dist/
 .idea/
 Thumbs.db
 .DS_Store
+
+
+application_data/

@@ -3,12 +3,14 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Any
+
+from app.audit_log import audit_event
 
 
 class PrintSessionError(RuntimeError):
     pass
+
 
 def _friendly_error(error: Exception) -> str:
     technical_error = str(error)
@@ -16,20 +18,20 @@ def _friendly_error(error: Exception) -> str:
 
     if "not a valid window handle" in normalized:
         return (
-            "Okno programu ETILABEL zostało zamknięte "
-            "lub przestało odpowiadać."
+            "Okno programu ETILABEL zostało "
+            "zamknięte lub przestało odpowiadać."
         )
 
     if "tnewprintdlg" in normalized:
         return (
-            "Nie udało się otworzyć okna drukowania "
-            "w programie ETILABEL."
+            "Nie udało się otworzyć okna "
+            "drukowania w programie ETILABEL."
         )
 
     if "tnewmainform" in normalized:
         return (
-            "Nie udało się otworzyć głównego okna "
-            "programu ETILABEL."
+            "Nie udało się otworzyć głównego "
+            "okna programu ETILABEL."
         )
 
     if "timeout" in normalized:
@@ -38,10 +40,16 @@ def _friendly_error(error: Exception) -> str:
             "w wymaganym czasie."
         )
 
-    if "printer" in normalized and "offline" in normalized:
-        return "Drukarka jest niedostępna lub offline."
+    if (
+        "printer" in normalized
+        and "offline" in normalized
+    ):
+        return (
+            "Drukarka jest niedostępna lub offline."
+        )
 
     return technical_error
+
 
 class SessionStatus(str, Enum):
     READY = "ready"
@@ -85,7 +93,9 @@ class PrintSession:
         self._lock = threading.RLock()
 
         self._status = SessionStatus.READY
-        self._completed_jobs: list[CompletedJob] = []
+        self._completed_jobs: list[
+            CompletedJob
+        ] = []
 
         self._next_45x45_index = 0
         self._next_45x110_index = 0
@@ -94,6 +104,26 @@ class PrintSession:
         self._failed_stage: str | None = None
         self._failed_job: FailedJob | None = None
         self._last_error: str | None = None
+
+        audit_event(
+            "print_session_created",
+            country=getattr(
+                plan,
+                "country",
+                "",
+            ),
+            jobs_45x45=len(
+                plan.jobs_45x45
+            ),
+            jobs_45x110=len(
+                plan.jobs_45x110
+            ),
+            total_labels=(
+                plan.total_45x45
+                + plan.total_45x110
+            ),
+            test_mode=self.test_mode,
+        )
 
     @property
     def status(self) -> SessionStatus:
@@ -104,12 +134,20 @@ class PrintSession:
         with self._lock:
             if self._status != SessionStatus.READY:
                 raise PrintSessionError(
-                    "Etap 45x45 można rozpocząć tylko "
-                    "dla nowej, gotowej sesji."
+                    "Etap 45x45 można rozpocząć "
+                    "tylko dla nowej, gotowej sesji."
                 )
 
-            self._status = SessionStatus.PRINTING_45X45
+            self._status = (
+                SessionStatus.PRINTING_45X45
+            )
             self._clear_failure()
+
+        audit_event(
+            "print_stage_started",
+            stage="45x45",
+            test_mode=self.test_mode,
+        )
 
         self._execute_stage("45x45")
 
@@ -130,14 +168,20 @@ class PrintSession:
             )
             self._clear_failure()
 
+        audit_event(
+            "print_stage_started",
+            stage="45x110",
+            test_mode=self.test_mode,
+        )
+
         self._execute_stage("45x110")
 
     def retry_failed_job(self) -> None:
         with self._lock:
             if self._status != SessionStatus.FAILED:
                 raise PrintSessionError(
-                    "Brak nieudanego zadania do "
-                    "ponowienia."
+                    "Brak nieudanego zadania "
+                    "do ponowienia."
                 )
 
             if (
@@ -150,15 +194,22 @@ class PrintSession:
                 )
 
             failed_stage = self._failed_stage
+            failed_product = getattr(
+                self._failed_job_object,
+                "product_folder_name",
+                "",
+            )
 
             if failed_stage == "45x45":
                 self._status = (
                     SessionStatus.PRINTING_45X45
                 )
+
             elif failed_stage == "45x110":
                 self._status = (
                     SessionStatus.PRINTING_45X110
                 )
+
             else:
                 raise PrintSessionError(
                     "Nieznany etap błędnego zadania."
@@ -167,9 +218,16 @@ class PrintSession:
             self._last_error = None
             self._failed_job = None
 
+        audit_event(
+            "failed_label_retry_started",
+            stage=failed_stage,
+            product=failed_product,
+            test_mode=self.test_mode,
+        )
+
         # Indeks nie został zwiększony po błędzie.
-        # Dzięki temu wykonanie zacznie się od
-        # dokładnie tej samej etykiety.
+        # Wykonanie rozpocznie się od tej samej
+        # etykiety, a nie od początku zamówienia.
         self._execute_stage(failed_stage)
 
     def abort(self) -> None:
@@ -180,23 +238,34 @@ class PrintSession:
                 SessionStatus.WAITING_FOR_110,
             }:
                 raise PrintSessionError(
-                    "Nie można przerwać sesji podczas "
-                    "aktywnego sterowania programem "
-                    "ETILABEL."
+                    "Nie można przerwać sesji "
+                    "podczas aktywnego sterowania "
+                    "programem ETILABEL."
                 )
+
+            completed_jobs_count = len(
+                self._completed_jobs
+            )
 
             self._status = SessionStatus.ABORTED
             self._failed_job_object = None
             self._failed_stage = None
             self._failed_job = None
+            self._last_error = None
+
+        audit_event(
+            "print_session_aborted",
+            completed_jobs=completed_jobs_count,
+            test_mode=self.test_mode,
+        )
 
     def _execute_stage(self, stage: str) -> None:
         jobs = self._jobs_for_stage(stage)
 
         while True:
             with self._lock:
-                current_index = self._index_for_stage(
-                    stage
+                current_index = (
+                    self._index_for_stage(stage)
                 )
 
                 if current_index >= len(jobs):
@@ -206,11 +275,14 @@ class PrintSession:
                 job = jobs[current_index]
 
             try:
-                result = self.controller.print_label(
-                    label_path=job.label_path,
-                    quantity=job.quantity,
-                    test_mode=self.test_mode,
+                result = (
+                    self.controller.print_label(
+                        label_path=job.label_path,
+                        quantity=job.quantity,
+                        test_mode=self.test_mode,
+                    )
                 )
+
             except Exception as exc:
                 self._record_failure(
                     stage=stage,
@@ -222,7 +294,7 @@ class PrintSession:
                     f"Nie udało się wydrukować "
                     f"etykiety "
                     f"'{job.product_folder_name}': "
-                    f"{exc}"
+                    f"{_friendly_error(exc)}"
                 ) from exc
 
             self._record_success(
@@ -291,6 +363,15 @@ class PrintSession:
             self._increase_stage_index(stage)
             self._clear_failure()
 
+        audit_event(
+            "label_completed",
+            stage=stage,
+            product=job.product_folder_name,
+            quantity=int(job.quantity),
+            label_path=str(job.label_path),
+            test_mode=self.test_mode,
+        )
+
     def _record_failure(
         self,
         stage: str,
@@ -316,6 +397,17 @@ class PrintSession:
 
             self._status = SessionStatus.FAILED
 
+        audit_event(
+            "label_failed",
+            level="error",
+            stage=stage,
+            product=job.product_folder_name,
+            quantity=int(job.quantity),
+            label_path=str(job.label_path),
+            error=error_text,
+            test_mode=self.test_mode,
+        )
+
     def _clear_failure(self) -> None:
         self._failed_job_object = None
         self._failed_stage = None
@@ -330,23 +422,32 @@ class PrintSession:
                 self._status = (
                     SessionStatus.WAITING_FOR_110
                 )
-                return
 
-            if stage == "45x110":
+            elif stage == "45x110":
                 self._status = (
                     SessionStatus.COMPLETED
                 )
-                return
 
-            raise PrintSessionError(
-                f"Nieznany etap druku: {stage}"
-            )
+            else:
+                raise PrintSessionError(
+                    f"Nieznany etap druku: {stage}"
+                )
+
+        audit_event(
+            "print_stage_completed",
+            stage=stage,
+            completed_jobs=len(
+                self._completed_jobs
+            ),
+            test_mode=self.test_mode,
+        )
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             total_45x45 = len(
                 self.plan.jobs_45x45
             )
+
             total_45x110 = len(
                 self.plan.jobs_45x110
             )
@@ -354,6 +455,7 @@ class PrintSession:
             completed_45x45 = (
                 self._next_45x45_index
             )
+
             completed_45x110 = (
                 self._next_45x110_index
             )
