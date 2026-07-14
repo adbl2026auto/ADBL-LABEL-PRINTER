@@ -1,0 +1,33 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Dane i konfiguracja lokalna
+.env
+config.json
+config.local.json
+logs/
+uploads/
+output/
+
+# Dane firmowe i projekty etykiet
+*.etx
+*.xlsx
+*.xls
+
+# Pliki testowego proof of concept
+diagnose_etilabel.py
+test_open_label.py
+
+# Budowanie EXE
+build/
+dist/
+*.spec
+
+# Edytory i system
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

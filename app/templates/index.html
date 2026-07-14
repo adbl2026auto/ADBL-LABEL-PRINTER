@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+    <title>ADBL Label Printer</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='app.css') }}"
+    >
+</head>
+
+<body>
+    <header class="topbar">
+        <div>
+            <p class="eyebrow">ADBL</p>
+            <h1>Label Printer</h1>
+        </div>
+
+        <div id="modeBadge" class="badge">
+            Sprawdzanie konfiguracji…
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="card">
+            <div class="section-heading">
+                <div>
+                    <span class="step-number">1</span>
+                    <h2>Wybierz zamówienie</h2>
+                </div>
+
+                <button
+                    id="resetButton"
+                    class="button button-secondary"
+                    type="button"
+                    hidden
+                >
+                    Nowe zamówienie
+                </button>
+            </div>
+
+            <form id="uploadForm">
+                <label
+                    id="dropZone"
+                    class="drop-zone"
+                    for="orderFile"
+                >
+                    <input
+                        id="orderFile"
+                        name="file"
+                        type="file"
+                        accept=".xlsx,.xlsm"
+                        required
+                    >
+
+                    <span class="drop-icon">↓</span>
+                    <strong>
+                        Wybierz plik Excel z zamówieniem
+                    </strong>
+                    <span id="fileName">
+                        lub przeciągnij go w to miejsce
+                    </span>
+                    <small>
+                        Obsługiwane formaty: XLSX, XLSM
+                    </small>
+                </label>
+
+                <button
+                    id="analyzeButton"
+                    class="button button-primary"
+                    type="submit"
+                >
+                    Przeanalizuj zamówienie
+                </button>
+            </form>
+        </section>
+
+        <div
+            id="message"
+            class="message"
+            hidden
+        ></div>
+
+        <section
+            id="planSection"
+            class="card"
+            hidden
+        >
+            <div class="section-heading">
+                <div>
+                    <span class="step-number">2</span>
+                    <h2>Plan drukowania</h2>
+                </div>
+
+                <div
+                    id="sessionStatus"
+                    class="status-badge"
+                >
+                    Gotowe
+                </div>
+            </div>
+
+            <div class="summary-grid">
+                <article class="summary-box">
+                    <span>Państwo</span>
+                    <strong id="countryValue">—</strong>
+                </article>
+
+                <article class="summary-box">
+                    <span>Etykiety 45×45</span>
+                    <strong id="total45Value">0</strong>
+                </article>
+
+                <article class="summary-box">
+                    <span>Etykiety 45×110</span>
+                    <strong id="total110Value">0</strong>
+                </article>
+
+                <article class="summary-box summary-total">
+                    <span>Łącznie</span>
+                    <strong id="totalValue">0</strong>
+                </article>
+            </div>
+
+            <div class="label-groups">
+                <article class="label-group">
+                    <div class="group-title">
+                        <div>
+                            <span class="format-mark format-45"></span>
+                            <h3>Etykiety 45×45</h3>
+                        </div>
+
+                        <strong id="jobCount45">0 pozycji</strong>
+                    </div>
+
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Produkt</th>
+                                    <th>Liczba etykiet</th>
+                                </tr>
+                            </thead>
+                            <tbody id="jobs45Table"></tbody>
+                        </table>
+                    </div>
+                </article>
+
+                <article class="label-group">
+                    <div class="group-title">
+                        <div>
+                            <span class="format-mark format-110"></span>
+                            <h3>Etykiety 45×110</h3>
+                        </div>
+
+                        <strong id="jobCount110">0 pozycji</strong>
+                    </div>
+
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Produkt</th>
+                                    <th>Liczba etykiet</th>
+                                </tr>
+                            </thead>
+                            <tbody id="jobs110Table"></tbody>
+                        </table>
+                    </div>
+                </article>
+            </div>
+
+            <details id="skippedDetails">
+                <summary>
+                    Produkty bez przeklejek:
+                    <strong id="skippedCount">0</strong>
+                </summary>
+
+                <ul id="skippedList"></ul>
+            </details>
+
+            <details
+                id="invalidDetails"
+                class="invalid-details"
+                hidden
+            >
+                <summary>
+                    Pozycje wymagające poprawy:
+                    <strong id="invalidCount">0</strong>
+                </summary>
+
+                <ul id="invalidList"></ul>
+            </details>
+
+            <div class="print-panel">
+                <div>
+                    <span class="step-number">3</span>
+                    <div>
+                        <h2>Rozpocznij drukowanie</h2>
+                        <p id="printInstruction">
+                            Najpierw zostaną wydrukowane
+                            wszystkie etykiety 45×45.
+                        </p>
+                    </div>
+                </div>
+
+                <button
+                    id="print45Button"
+                    class="button button-print"
+                    type="button"
+                >
+                    Drukuj 45×45
+                </button>
+            </div>
+        </section>
+    </main>
+
+    <dialog id="rollDialog">
+        <div class="dialog-content">
+            <div class="roll-icon">↕</div>
+
+            <h2>Zmień rolkę etykiet</h2>
+
+            <p>
+                Drukowanie etykiet 45×45 zostało
+                zakończone.
+            </p>
+
+            <p>
+                Załóż rolkę <strong>45×110</strong>,
+                upewnij się, że drukarka jest gotowa,
+                a następnie kliknij przycisk poniżej.
+            </p>
+
+            <button
+                id="confirmRollButton"
+                class="button button-print"
+                type="button"
+            >
+                Rolka 45×110 założona — drukuj
+            </button>
+        </div>
+    </dialog>
+
+    <script
+        src="{{ url_for('static', filename='app.js') }}"
+    ></script>
+</body>
+</html>
