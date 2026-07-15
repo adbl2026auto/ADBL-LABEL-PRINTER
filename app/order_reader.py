@@ -1,346 +1,627 @@
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 
 from openpyxl import load_workbook
 
 
-CAPACITY_PATTERN = re.compile(
-    r"(\d+(?:[,.]\d+)?)\s*l\s*$",
-    flags=re.IGNORECASE,
-)
+class OrderReadError(RuntimeError):
+    pass
 
-COUNTRY_PATTERN = re.compile(
-    r"^zam[oó]wienie[\s_-]+(.+)$",
-    flags=re.IGNORECASE,
-)
 
-LABEL_FORMATS = {
-    Decimal("0.2"): "45x45",
-    Decimal("0.5"): "45x45",
-    Decimal("1"): "45x110",
-    Decimal("5"): "45x110",
-    Decimal("10"): "45x110",
+COUNTRY_SUFFIX_ALIASES = {
+    "bulgaria": "BUŁGARIA",
+    "bulgaria bg": "BUŁGARIA",
+    "czechy": "CZECHY",
+    "republika czeska": "CZECHY",
+    "czech republic": "CZECHY",
+    "finlandia": "FINLANDIA",
+    "litwa": "LITWA",
+    "portugalia": "PORTUGALIA",
+    "rumunia": "RUMUNIA",
+    "romania": "RUMUNIA",
+    "slowenia": "SŁOWENIA",
+    "slovenia": "SŁOWENIA",
+    "wegry": "WĘGRY",
+    "hungary": "WĘGRY",
+    "wlochy": "WŁOCHY",
+    "italia": "WŁOCHY",
+    "italy": "WŁOCHY",
 }
 
 
-class OrderReadError(Exception):
-    """Błąd uniemożliwiający odczyt zamówienia."""
+PRODUCT_HEADER_ALIASES = {
+    "towarnazwa",
+    "nazwatowaru",
+    "nazwaproduktu",
+    "produkt",
+    "productname",
+    "nazwa",
+}
+
+
+QUANTITY_HEADER_ALIASES = {
+    "ilosc",
+    "liczba",
+    "liczbasztuk",
+    "quantity",
+    "qty",
+}
+
+
+CATALOG_HEADER_ALIASES = {
+    "towarnumerkatalogowy",
+    "numerkatalogowy",
+    "nrkatalogowy",
+    "catalognumber",
+    "sku",
+}
+
+
+CAPACITY_PATTERN = re.compile(
+    r"(?<!\d)"
+    r"(\d+(?:[.,]\d+)?)"
+    r"\s*(ml|l)"
+    r"\b",
+    flags=re.IGNORECASE,
+)
+
+
+CAPACITY_AT_END_PATTERN = re.compile(
+    r"\s+"
+    r"\d+(?:[.,]\d+)?"
+    r"\s*(?:ml|l)"
+    r"\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+KIT_OR_SET_PATTERN = re.compile(
+    r"\b(?:KIT|SET)\b",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
 class OrderItem:
     row_number: int
-    product_code: str
-    catalog_number: str
     product_name: str
     quantity: int
-    unit: str
-    capacity_liters: Decimal | None
+    capacity_liters: float | None
     label_format: str | None
     product_folder_name: str
+    catalog_number: str | None = None
 
 
 @dataclass(frozen=True)
 class ParsedOrder:
     source_path: Path
     country: str
+    worksheet_name: str
     items: list[OrderItem]
 
 
-def normalize_header(value: object) -> str:
-    text = unicodedata.normalize(
-        "NFKD",
-        str(value or ""),
+def _normalize_text(value: Any) -> str:
+    text = (
+        str(value or "")
+        .strip()
+        .casefold()
     )
-    text = "".join(
+
+    decomposed = unicodedata.normalize(
+        "NFKD",
+        text,
+    )
+
+    without_accents = "".join(
         character
-        for character in text
-        if not unicodedata.combining(character)
+        for character in decomposed
+        if not unicodedata.combining(
+            character
+        )
     )
 
     return re.sub(
-        r"[^a-z0-9]",
-        "",
-        text.casefold(),
+        r"[^a-z0-9]+",
+        " ",
+        without_accents,
+    ).strip()
+
+
+def _normalize_header(value: Any) -> str:
+    return _normalize_text(
+        value
+    ).replace(" ", "")
+
+
+def extract_country(
+    file_path: str | Path,
+) -> str:
+    filename = Path(file_path).stem
+
+    normalized_filename = (
+        _normalize_text(filename)
     )
 
-
-def extract_country(file_path: str | Path) -> str:
-    path = Path(file_path)
-    filename_without_extension = path.stem
-
-    match = re.search(
-        r"zam[oó]wienie[\s_-]+(.+)$",
-        filename_without_extension,
-        flags=re.IGNORECASE,
+    aliases = sorted(
+        COUNTRY_SUFFIX_ALIASES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
     )
 
-    if not match:
-        raise OrderReadError(
-            "Nazwa pliku powinna zawierać "
-            "'ZAMÓWIENIE PAŃSTWO.xlsx', np. "
-            "'ZAMÓWIENIE RUMUNIA.xlsx'."
-        )
+    for alias, canonical_country in aliases:
+        if (
+            normalized_filename == alias
+            or normalized_filename.endswith(
+                f" {alias}"
+            )
+        ):
+            return canonical_country
 
-    country = match.group(1)
-    country = re.sub(r"[_-]+", " ", country)
-    country = re.sub(r"\s+", " ", country).strip()
+    supported_countries = (
+        "BUŁGARIA, CZECHY, FINLANDIA, "
+        "LITWA, PORTUGALIA, RUMUNIA, "
+        "SŁOWENIA, WĘGRY lub WŁOCHY"
+    )
 
-    if not country:
-        raise OrderReadError(
-            "Nie udało się odczytać państwa "
-            "z nazwy pliku."
-        )
-
-    return country.upper()
+    raise OrderReadError(
+        "Nie udało się rozpoznać państwa "
+        "z końca nazwy pliku. "
+        "Nazwa pliku musi kończyć się nazwą "
+        "państwa, np. „Ahifi CZECHY.xlsx”. "
+        f"Obsługiwane państwa: "
+        f"{supported_countries}."
+    )
 
 
 def extract_capacity_liters(
     product_name: str,
-) -> Decimal | None:
-    match = CAPACITY_PATTERN.search(product_name)
+) -> float | None:
+    matches = list(
+        CAPACITY_PATTERN.finditer(
+            product_name
+        )
+    )
 
-    if not match:
+    if not matches:
         return None
 
-    value = match.group(1).replace(",", ".")
+    match = matches[-1]
+
+    numeric_value = (
+        match.group(1)
+        .replace(",", ".")
+    )
 
     try:
-        return Decimal(value)
-    except InvalidOperation as error:
-        raise OrderReadError(
-            "Nieprawidłowa pojemność w nazwie: "
-            f"{product_name!r}."
-        ) from error
+        capacity = float(
+            numeric_value
+        )
+    except ValueError:
+        return None
+
+    unit = match.group(2).casefold()
+
+    if unit == "ml":
+        capacity = capacity / 1000
+
+    return capacity
 
 
 def select_label_format(
-    capacity_liters: Decimal | None,
+    capacity_liters: float | None,
+    product_name: str = "",
 ) -> str | None:
+    # Produkty zawierające osobne słowo
+    # KIT albo SET zawsze otrzymują format
+    # 45x110, nawet jeśli nazwa nie zawiera
+    # informacji o pojemności.
+    if KIT_OR_SET_PATTERN.search(
+        product_name
+    ):
+        return "45x110"
+
     if capacity_liters is None:
         return None
 
-    return LABEL_FORMATS.get(capacity_liters)
+    small_capacities = (
+        0.2,
+        0.5,
+    )
+
+    large_capacities = (
+        1.0,
+        5.0,
+        10.0,
+    )
+
+    if any(
+        math.isclose(
+            capacity_liters,
+            expected,
+            abs_tol=0.001,
+        )
+        for expected in small_capacities
+    ):
+        return "45x45"
+
+    if any(
+        math.isclose(
+            capacity_liters,
+            expected,
+            abs_tol=0.001,
+        )
+        for expected in large_capacities
+    ):
+        return "45x110"
+
+    return None
 
 
 def extract_product_folder_name(
     product_name: str,
 ) -> str:
+    name = str(
+        product_name
+    ).strip()
+
     name = re.sub(
-        r"^\s*ADBL\s+",
+        r"^\s*ADBL\b[\s:-]*",
         "",
-        product_name,
+        name,
         flags=re.IGNORECASE,
     )
 
-    name = CAPACITY_PATTERN.sub("", name)
+    name = CAPACITY_AT_END_PATTERN.sub(
+        "",
+        name,
+    )
 
-    return name.strip()
+    name = re.sub(
+        r"\s+",
+        " ",
+        name,
+    )
+
+    return name.strip(
+        " -–—"
+    )
 
 
-def parse_quantity(
-    value: object,
-    row_number: int,
-) -> int:
-    try:
-        quantity = Decimal(
-            str(value).strip().replace(",", ".")
-        )
-    except InvalidOperation as error:
+def parse_quantity(value: Any) -> int:
+    if value is None:
         raise OrderReadError(
-            f"Nieprawidłowa ilość w wierszu "
-            f"{row_number}: {value!r}."
-        ) from error
-
-    if quantity <= 0:
-        raise OrderReadError(
-            f"Ilość w wierszu {row_number} "
-            "musi być większa od zera."
+            "Brak ilości produktu."
         )
 
-    if quantity != quantity.to_integral_value():
+    if isinstance(value, bool):
         raise OrderReadError(
-            f"Ilość etykiet w wierszu {row_number} "
-            "musi być liczbą całkowitą."
+            "Nieprawidłowa ilość produktu."
         )
 
-    return int(quantity)
+    if isinstance(value, int):
+        quantity = value
+
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise OrderReadError(
+                "Ilość musi być liczbą "
+                f"całkowitą: {value}."
+            )
+
+        quantity = int(value)
+
+    else:
+        text = str(value).strip()
+
+        if not text:
+            raise OrderReadError(
+                "Brak ilości produktu."
+            )
+
+        text = text.replace(
+            " ",
+            "",
+        )
+
+        text = text.replace(
+            ",",
+            ".",
+        )
+
+        try:
+            numeric_value = float(text)
+        except ValueError as exc:
+            raise OrderReadError(
+                f"Nieprawidłowa ilość: "
+                f"{value}."
+            ) from exc
+
+        if not numeric_value.is_integer():
+            raise OrderReadError(
+                "Ilość musi być liczbą "
+                f"całkowitą: {value}."
+            )
+
+        quantity = int(
+            numeric_value
+        )
+
+    if quantity < 0:
+        raise OrderReadError(
+            "Ilość nie może być ujemna: "
+            f"{quantity}."
+        )
+
+    return quantity
+
+
+def _find_column(
+    header_values: tuple[Any, ...],
+    aliases: set[str],
+) -> int | None:
+    for column_index, value in enumerate(
+        header_values
+    ):
+        normalized = (
+            _normalize_header(value)
+        )
+
+        if normalized in aliases:
+            return column_index
+
+    return None
+
+
+def _optional_text(
+    value: Any,
+) -> str | None:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    return text or None
 
 
 def read_order(
     file_path: str | Path,
 ) -> ParsedOrder:
-    path = Path(file_path)
+    source_path = Path(file_path)
 
-    if not path.exists():
+    if not source_path.is_file():
         raise OrderReadError(
-            f"Nie znaleziono pliku: {path}"
+            "Nie znaleziono pliku "
+            f"zamówienia: {source_path}"
         )
 
-    if path.suffix.casefold() != ".xlsx":
-        raise OrderReadError(
-            "Obsługiwane są wyłącznie pliki XLSX."
-        )
-
-    country = extract_country(path)
-
-    workbook = load_workbook(
-        path,
-        read_only=True,
-        data_only=True,
+    country = extract_country(
+        source_path
     )
+
+    try:
+        workbook = load_workbook(
+            source_path,
+            read_only=True,
+            data_only=True,
+        )
+
+    except Exception as exc:
+        raise OrderReadError(
+            "Nie udało się otworzyć "
+            f"pliku Excel: {exc}"
+        ) from exc
 
     try:
         worksheet = workbook.active
 
-        header_row = next(
-            worksheet.iter_rows(
-                min_row=1,
-                max_row=1,
-                values_only=True,
-            ),
-            None,
+        rows = worksheet.iter_rows(
+            values_only=True
         )
 
-        if header_row is None:
+        header_row_number: (
+            int | None
+        ) = None
+
+        product_column: (
+            int | None
+        ) = None
+
+        quantity_column: (
+            int | None
+        ) = None
+
+        catalog_column: (
+            int | None
+        ) = None
+
+        for row_number, row in enumerate(
+            rows,
+            start=1,
+        ):
+            row_values = tuple(row)
+
+            possible_product_column = (
+                _find_column(
+                    row_values,
+                    PRODUCT_HEADER_ALIASES,
+                )
+            )
+
+            possible_quantity_column = (
+                _find_column(
+                    row_values,
+                    QUANTITY_HEADER_ALIASES,
+                )
+            )
+
+            if (
+                possible_product_column is None
+                or possible_quantity_column
+                is None
+            ):
+                continue
+
+            header_row_number = row_number
+
+            product_column = (
+                possible_product_column
+            )
+
+            quantity_column = (
+                possible_quantity_column
+            )
+
+            catalog_column = _find_column(
+                row_values,
+                CATALOG_HEADER_ALIASES,
+            )
+
+            break
+
+        if header_row_number is None:
             raise OrderReadError(
-                "Arkusz jest pusty."
+                "W arkuszu nie znaleziono "
+                "wymaganych kolumn. "
+                "Wymagane są tylko kolumny: "
+                "nazwa produktu oraz ilość."
             )
 
-        headers = {
-            normalize_header(value): column_number
-            for column_number, value in enumerate(
-                header_row,
-                start=1,
-            )
-            if value is not None
-        }
-
-        required_headers = {
-            "product_code": "towarkod",
-            "catalog_number": (
-                "towarnumerkatalogowy"
-            ),
-            "product_name": "towarnazwa",
-            "quantity": "ilosc",
-        }
-
-        missing_headers = [
-            header
-            for header in required_headers.values()
-            if header not in headers
-        ]
-
-        if missing_headers:
+        if product_column is None:
             raise OrderReadError(
-                "W arkuszu brakuje wymaganych kolumn: "
-                + ", ".join(missing_headers)
+                "Nie znaleziono kolumny "
+                "z nazwą produktu."
             )
 
-        unit_column = headers.get(
-            "iloscjednostka"
-        )
+        if quantity_column is None:
+            raise OrderReadError(
+                "Nie znaleziono kolumny "
+                "z ilością."
+            )
 
         items: list[OrderItem] = []
 
         for row_number, row in enumerate(
-            worksheet.iter_rows(
-                min_row=2,
-                values_only=True,
-            ),
-            start=2,
+            rows,
+            start=header_row_number + 1,
         ):
-            def value_at(
-                column_number: int,
-            ) -> object:
-                index = column_number - 1
+            row_values = tuple(row)
 
-                if index >= len(row):
-                    return None
-
-                return row[index]
-
-            product_name_value = value_at(
-                headers["towarnazwa"]
-            )
-
-            if product_name_value is None:
+            if (
+                product_column
+                >= len(row_values)
+            ):
                 continue
 
-            product_name = str(
-                product_name_value
-            ).strip()
+            product_value = row_values[
+                product_column
+            ]
+
+            product_name = _optional_text(
+                product_value
+            )
 
             if not product_name:
                 continue
 
-            quantity_value = value_at(
-                headers["ilosc"]
-            )
-
-            capacity = extract_capacity_liters(
-                product_name
-            )
-
-            unit = ""
-
-            if unit_column is not None:
-                unit_value = value_at(
-                    unit_column
+            if (
+                quantity_column
+                >= len(row_values)
+            ):
+                raise OrderReadError(
+                    "Brak ilości w wierszu "
+                    f"{row_number}."
                 )
-                unit = str(
-                    unit_value or ""
-                ).strip()
 
-            item = OrderItem(
-                row_number=row_number,
-                product_code=str(
-                    value_at(
-                        headers["towarkod"]
-                    )
-                    or ""
-                ).strip(),
-                catalog_number=str(
-                    value_at(
-                        headers[
-                            "towarnumerkatalogowy"
+            try:
+                quantity = parse_quantity(
+                    row_values[
+                        quantity_column
+                    ]
+                )
+
+            except OrderReadError as exc:
+                raise OrderReadError(
+                    f"Wiersz {row_number}, "
+                    f"produkt „{product_name}”: "
+                    f"{exc}"
+                ) from exc
+
+            # Pozycje z ilością 0 nie
+            # wymagają żadnych etykiet.
+            if quantity == 0:
+                continue
+
+            catalog_number = None
+
+            if (
+                catalog_column is not None
+                and catalog_column
+                < len(row_values)
+            ):
+                catalog_number = (
+                    _optional_text(
+                        row_values[
+                            catalog_column
                         ]
                     )
-                    or ""
-                ).strip(),
-                product_name=product_name,
-                quantity=parse_quantity(
-                    quantity_value,
-                    row_number,
-                ),
-                unit=unit,
-                capacity_liters=capacity,
-                label_format=select_label_format(
-                    capacity
-                ),
-                product_folder_name=(
-                    extract_product_folder_name(
-                        product_name
-                    )
-                ),
+                )
+
+            capacity_liters = (
+                extract_capacity_liters(
+                    product_name
+                )
             )
 
-            items.append(item)
+            label_format = (
+                select_label_format(
+                    capacity_liters,
+                    product_name,
+                )
+            )
+
+            product_folder_name = (
+                extract_product_folder_name(
+                    product_name
+                )
+            )
+
+            items.append(
+                OrderItem(
+                    row_number=row_number,
+                    product_name=product_name,
+                    quantity=quantity,
+                    capacity_liters=(
+                        capacity_liters
+                    ),
+                    label_format=(
+                        label_format
+                    ),
+                    product_folder_name=(
+                        product_folder_name
+                    ),
+                    catalog_number=(
+                        catalog_number
+                    ),
+                )
+            )
 
         if not items:
             raise OrderReadError(
-                "Zamówienie nie zawiera "
-                "żadnych produktów."
+                "W zamówieniu nie znaleziono "
+                "żadnych pozycji z ilością "
+                "większą od zera."
             )
 
         return ParsedOrder(
-            source_path=path,
+            source_path=source_path,
             country=country,
+            worksheet_name=worksheet.title,
             items=items,
         )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from app.audit_log import audit_event
@@ -45,7 +46,8 @@ def _friendly_error(error: Exception) -> str:
         and "offline" in normalized
     ):
         return (
-            "Drukarka jest niedostępna lub offline."
+            "Drukarka jest niedostępna "
+            "lub offline."
         )
 
     return technical_error
@@ -79,6 +81,13 @@ class FailedJob:
     error: str
 
 
+@dataclass(frozen=True)
+class SeparatorJob:
+    product_folder_name: str
+    label_path: Path
+    quantity: int = 1
+
+
 class PrintSession:
     def __init__(
         self,
@@ -93,6 +102,7 @@ class PrintSession:
         self._lock = threading.RLock()
 
         self._status = SessionStatus.READY
+
         self._completed_jobs: list[
             CompletedJob
         ] = []
@@ -104,6 +114,35 @@ class PrintSession:
         self._failed_stage: str | None = None
         self._failed_job: FailedJob | None = None
         self._last_error: str | None = None
+
+        # Informacja, czy separator przed
+        # aktualnym produktem został już
+        # poprawnie wydrukowany.
+        self._separator_completed_for: (
+            tuple[str, int] | None
+        ) = None
+
+        self._completed_separators_45x45 = 0
+        self._completed_separators_45x110 = 0
+
+        labels_root = Path(
+            plan.country_folder
+        ).parent
+
+        system_folder = (
+            labels_root / "_SYSTEM"
+        )
+
+        self._separator_paths = {
+            "45x45": (
+                system_folder / "45x45.etx"
+            ),
+            "45x110": (
+                system_folder / "45x110.etx"
+            ),
+        }
+
+        self._validate_separator_templates()
 
         audit_event(
             "print_session_created",
@@ -118,6 +157,14 @@ class PrintSession:
             jobs_45x110=len(
                 plan.jobs_45x110
             ),
+            separators_45x45=max(
+                0,
+                len(plan.jobs_45x45) - 1,
+            ),
+            separators_45x110=max(
+                0,
+                len(plan.jobs_45x110) - 1,
+            ),
             total_labels=(
                 plan.total_45x45
                 + plan.total_45x110
@@ -130,17 +177,64 @@ class PrintSession:
         with self._lock:
             return self._status
 
+    def _validate_separator_templates(
+        self,
+    ) -> None:
+        stages = (
+            (
+                "45x45",
+                self.plan.jobs_45x45,
+            ),
+            (
+                "45x110",
+                self.plan.jobs_45x110,
+            ),
+        )
+
+        missing_paths: list[Path] = []
+
+        for stage, jobs in stages:
+            # Separator jest potrzebny tylko,
+            # jeśli dany format zawiera więcej
+            # niż jeden produkt.
+            if len(jobs) <= 1:
+                continue
+
+            separator_path = (
+                self._separator_paths[stage]
+            )
+
+            if not separator_path.is_file():
+                missing_paths.append(
+                    separator_path
+                )
+
+        if missing_paths:
+            missing_text = ", ".join(
+                str(path)
+                for path in missing_paths
+            )
+
+            raise PrintSessionError(
+                "Brakuje pustych szablonów "
+                "oddzielających produkty: "
+                f"{missing_text}"
+            )
+
     def print_45x45(self) -> None:
         with self._lock:
             if self._status != SessionStatus.READY:
                 raise PrintSessionError(
                     "Etap 45x45 można rozpocząć "
-                    "tylko dla nowej, gotowej sesji."
+                    "tylko dla nowej, gotowej "
+                    "sesji."
                 )
 
             self._status = (
                 SessionStatus.PRINTING_45X45
             )
+
+            self._separator_completed_for = None
             self._clear_failure()
 
         audit_event(
@@ -166,6 +260,8 @@ class PrintSession:
             self._status = (
                 SessionStatus.PRINTING_45X110
             )
+
+            self._separator_completed_for = None
             self._clear_failure()
 
         audit_event(
@@ -190,10 +286,12 @@ class PrintSession:
             ):
                 raise PrintSessionError(
                     "Nie udało się odtworzyć "
-                    "informacji o błędnej etykiecie."
+                    "informacji o błędnej "
+                    "etykiecie."
                 )
 
             failed_stage = self._failed_stage
+
             failed_product = getattr(
                 self._failed_job_object,
                 "product_folder_name",
@@ -212,7 +310,8 @@ class PrintSession:
 
             else:
                 raise PrintSessionError(
-                    "Nieznany etap błędnego zadania."
+                    "Nieznany etap błędnego "
+                    "zadania."
                 )
 
             self._last_error = None
@@ -225,10 +324,9 @@ class PrintSession:
             test_mode=self.test_mode,
         )
 
-        # Indeks nie został zwiększony po błędzie.
-        # Wykonanie rozpocznie się od tej samej
-        # etykiety, a nie od początku zamówienia.
-        self._execute_stage(failed_stage)
+        self._execute_stage(
+            failed_stage
+        )
 
     def abort(self) -> None:
         with self._lock:
@@ -247,25 +345,38 @@ class PrintSession:
                 self._completed_jobs
             )
 
-            self._status = SessionStatus.ABORTED
+            self._status = (
+                SessionStatus.ABORTED
+            )
+
             self._failed_job_object = None
             self._failed_stage = None
             self._failed_job = None
             self._last_error = None
+            self._separator_completed_for = None
 
         audit_event(
             "print_session_aborted",
-            completed_jobs=completed_jobs_count,
+            completed_jobs=(
+                completed_jobs_count
+            ),
             test_mode=self.test_mode,
         )
 
-    def _execute_stage(self, stage: str) -> None:
-        jobs = self._jobs_for_stage(stage)
+    def _execute_stage(
+        self,
+        stage: str,
+    ) -> None:
+        jobs = self._jobs_for_stage(
+            stage
+        )
 
         while True:
             with self._lock:
                 current_index = (
-                    self._index_for_stage(stage)
+                    self._index_for_stage(
+                        stage
+                    )
                 )
 
                 if current_index >= len(jobs):
@@ -273,6 +384,34 @@ class PrintSession:
                     return
 
                 job = jobs[current_index]
+
+            # Separator drukujemy przed każdym
+            # produktem poza pierwszym.
+            #
+            # Jeśli produkt po separatorze ulegnie
+            # awarii, informacja o zakończonym
+            # separatorze zostaje zachowana.
+            # Dzięki temu kliknięcie „Ponów”
+            # nie wydrukuje drugiej pustej etykiety.
+            if current_index > 0:
+                separator_key = (
+                    stage,
+                    current_index,
+                )
+
+                with self._lock:
+                    separator_completed = (
+                        self._separator_completed_for
+                        == separator_key
+                    )
+
+                if not separator_completed:
+                    self._print_separator(
+                        stage=stage,
+                        current_index=(
+                            current_index
+                        ),
+                    )
 
             try:
                 result = (
@@ -291,7 +430,7 @@ class PrintSession:
                 )
 
                 raise PrintSessionError(
-                    f"Nie udało się wydrukować "
+                    "Nie udało się wydrukować "
                     f"etykiety "
                     f"'{job.product_folder_name}': "
                     f"{_friendly_error(exc)}"
@@ -303,7 +442,83 @@ class PrintSession:
                 result=result,
             )
 
-    def _jobs_for_stage(self, stage: str):
+    def _print_separator(
+        self,
+        stage: str,
+        current_index: int,
+    ) -> None:
+        separator_path = (
+            self._separator_paths[stage]
+        )
+
+        separator_job = SeparatorJob(
+            product_folder_name=(
+                "Pusta etykieta oddzielająca"
+            ),
+            label_path=separator_path,
+            quantity=1,
+        )
+
+        audit_event(
+            "separator_started",
+            stage=stage,
+            before_product_index=(
+                current_index
+            ),
+            label_path=str(
+                separator_path
+            ),
+            test_mode=self.test_mode,
+        )
+
+        try:
+            self.controller.print_label(
+                label_path=separator_path,
+                quantity=1,
+                test_mode=self.test_mode,
+            )
+
+        except Exception as exc:
+            self._record_failure(
+                stage=stage,
+                job=separator_job,
+                error=exc,
+            )
+
+            raise PrintSessionError(
+                "Nie udało się wydrukować "
+                "pustej etykiety oddzielającej "
+                f"produkty: {_friendly_error(exc)}"
+            ) from exc
+
+        with self._lock:
+            self._separator_completed_for = (
+                stage,
+                current_index,
+            )
+
+            if stage == "45x45":
+                self._completed_separators_45x45 += 1
+
+            elif stage == "45x110":
+                self._completed_separators_45x110 += 1
+
+        audit_event(
+            "separator_completed",
+            stage=stage,
+            before_product_index=(
+                current_index
+            ),
+            label_path=str(
+                separator_path
+            ),
+            test_mode=self.test_mode,
+        )
+
+    def _jobs_for_stage(
+        self,
+        stage: str,
+    ):
         if stage == "45x45":
             return self.plan.jobs_45x45
 
@@ -314,7 +529,10 @@ class PrintSession:
             f"Nieznany etap druku: {stage}"
         )
 
-    def _index_for_stage(self, stage: str) -> int:
+    def _index_for_stage(
+        self,
+        stage: str,
+    ) -> int:
         if stage == "45x45":
             return self._next_45x45_index
 
@@ -354,21 +572,40 @@ class PrintSession:
                     product_folder_name=(
                         job.product_folder_name
                     ),
-                    label_path=str(job.label_path),
-                    quantity=int(job.quantity),
+                    label_path=str(
+                        job.label_path
+                    ),
+                    quantity=int(
+                        job.quantity
+                    ),
                     result=str(result),
                 )
             )
 
-            self._increase_stage_index(stage)
+            self._increase_stage_index(
+                stage
+            )
+
+            # Produkt po separatorze został
+            # zakończony. Dla następnego
+            # produktu potrzebny będzie nowy
+            # separator.
+            self._separator_completed_for = None
+
             self._clear_failure()
 
         audit_event(
             "label_completed",
             stage=stage,
-            product=job.product_folder_name,
-            quantity=int(job.quantity),
-            label_path=str(job.label_path),
+            product=(
+                job.product_folder_name
+            ),
+            quantity=int(
+                job.quantity
+            ),
+            label_path=str(
+                job.label_path
+            ),
             test_mode=self.test_mode,
         )
 
@@ -378,7 +615,9 @@ class PrintSession:
         job,
         error: Exception,
     ) -> None:
-        error_text = _friendly_error(error)
+        error_text = _friendly_error(
+            error
+        )
 
         with self._lock:
             self._failed_job_object = job
@@ -390,20 +629,32 @@ class PrintSession:
                 product_folder_name=(
                     job.product_folder_name
                 ),
-                label_path=str(job.label_path),
-                quantity=int(job.quantity),
+                label_path=str(
+                    job.label_path
+                ),
+                quantity=int(
+                    job.quantity
+                ),
                 error=error_text,
             )
 
-            self._status = SessionStatus.FAILED
+            self._status = (
+                SessionStatus.FAILED
+            )
 
         audit_event(
             "label_failed",
             level="error",
             stage=stage,
-            product=job.product_folder_name,
-            quantity=int(job.quantity),
-            label_path=str(job.label_path),
+            product=(
+                job.product_folder_name
+            ),
+            quantity=int(
+                job.quantity
+            ),
+            label_path=str(
+                job.label_path
+            ),
             error=error_text,
             test_mode=self.test_mode,
         )
@@ -414,9 +665,13 @@ class PrintSession:
         self._failed_job = None
         self._last_error = None
 
-    def _finish_stage(self, stage: str) -> None:
+    def _finish_stage(
+        self,
+        stage: str,
+    ) -> None:
         with self._lock:
             self._clear_failure()
+            self._separator_completed_for = None
 
             if stage == "45x45":
                 self._status = (
@@ -430,7 +685,8 @@ class PrintSession:
 
             else:
                 raise PrintSessionError(
-                    f"Nieznany etap druku: {stage}"
+                    "Nieznany etap druku: "
+                    f"{stage}"
                 )
 
         audit_event(
@@ -439,8 +695,29 @@ class PrintSession:
             completed_jobs=len(
                 self._completed_jobs
             ),
+            completed_separators=(
+                self._completed_separators_for_stage(
+                    stage
+                )
+            ),
             test_mode=self.test_mode,
         )
+
+    def _completed_separators_for_stage(
+        self,
+        stage: str,
+    ) -> int:
+        if stage == "45x45":
+            return (
+                self._completed_separators_45x45
+            )
+
+        if stage == "45x110":
+            return (
+                self._completed_separators_45x110
+            )
+
+        return 0
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -460,6 +737,16 @@ class PrintSession:
                 self._next_45x110_index
             )
 
+            total_separators_45x45 = max(
+                0,
+                total_45x45 - 1,
+            )
+
+            total_separators_45x110 = max(
+                0,
+                total_45x110 - 1,
+            )
+
             return {
                 "status": self._status.value,
                 "test_mode": self.test_mode,
@@ -472,11 +759,15 @@ class PrintSession:
                     "completed_45x45": (
                         completed_45x45
                     ),
-                    "total_45x45": total_45x45,
+                    "total_45x45": (
+                        total_45x45
+                    ),
                     "completed_45x110": (
                         completed_45x110
                     ),
-                    "total_45x110": total_45x110,
+                    "total_45x110": (
+                        total_45x110
+                    ),
                     "completed_total": (
                         completed_45x45
                         + completed_45x110
@@ -484,6 +775,20 @@ class PrintSession:
                     "total_jobs": (
                         total_45x45
                         + total_45x110
+                    ),
+                    "completed_separators_45x45": (
+                        self
+                        ._completed_separators_45x45
+                    ),
+                    "total_separators_45x45": (
+                        total_separators_45x45
+                    ),
+                    "completed_separators_45x110": (
+                        self
+                        ._completed_separators_45x110
+                    ),
+                    "total_separators_45x110": (
+                        total_separators_45x110
                     ),
                 },
             }

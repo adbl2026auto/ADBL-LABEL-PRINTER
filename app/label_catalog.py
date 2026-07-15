@@ -5,48 +5,36 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.order_reader import OrderItem, ParsedOrder
+from app.order_reader import (
+    OrderItem,
+    ParsedOrder,
+)
 
-
-POLISH_TRANSLATION = str.maketrans({
-    "ł": "l",
-    "Ł": "L",
-})
 
 COUNTRY_FOLDERS = {
-    "bulgaria": "Bułgarski BG",
-    "bg": "Bułgarski BG",
-    "czechy": "Czeski CS",
-    "cs": "Czeski CS",
-    "finlandia": "Fiński FI",
-    "fi": "Fiński FI",
-    "litwa": "Litewski LT",
-    "lt": "Litewski LT",
-    "portugalia": "Portugalski PT",
-    "pt": "Portugalski PT",
-    "rumunia": "Rumunia RO",
-    "ro": "Rumunia RO",
-    "slowenia": "Słoweński SL",
-    "sl": "Słoweński SL",
-    "wegry": "Węgierski HU",
-    "hu": "Węgierski HU",
-    "wlochy": "Włoski IT",
-    "it": "Włoski IT",
+    "BUŁGARIA": "Bułgarski BG",
+    "CZECHY": "Czeski CS",
+    "FINLANDIA": "Fiński FI",
+    "LITWA": "Litewski LT",
+    "PORTUGALIA": "Portugalski PT",
+    "RUMUNIA": "Rumunia RO",
+    "SŁOWENIA": "Słoweński SL",
+    "WĘGRY": "Węgierski HU",
+    "WŁOCHY": "Włoski IT",
 }
 
 
-class LabelCatalogError(Exception):
-    """Błąd konfiguracji lub struktury katalogu etykiet."""
+class LabelCatalogError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
 class LabelJob:
-    label_path: Path
-    product_name: str
+    item: OrderItem
     product_folder_name: str
     label_format: str
+    label_path: Path
     quantity: int
-    row_numbers: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -72,26 +60,40 @@ class PrintPlan:
 
     @property
     def total_45x45(self) -> int:
-        return sum(job.quantity for job in self.jobs_45x45)
+        return sum(
+            job.quantity
+            for job in self.jobs_45x45
+        )
 
     @property
     def total_45x110(self) -> int:
-        return sum(job.quantity for job in self.jobs_45x110)
-
-    @property
-    def total_labels(self) -> int:
-        return self.total_45x45 + self.total_45x110
+        return sum(
+            job.quantity
+            for job in self.jobs_45x110
+        )
 
 
 def normalize_name(value: str) -> str:
-    text = value.translate(POLISH_TRANSLATION)
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(
-        character
-        for character in text
-        if not unicodedata.combining(character)
+    text = str(value or "").strip().casefold()
+
+    decomposed = unicodedata.normalize(
+        "NFKD",
+        text,
     )
-    return re.sub(r"[^a-z0-9]", "", text.casefold())
+
+    without_accents = "".join(
+        character
+        for character in decomposed
+        if not unicodedata.combining(
+            character
+        )
+    )
+
+    return re.sub(
+        r"[^a-z0-9]+",
+        "",
+        without_accents,
+    )
 
 
 def resolve_country_folder(
@@ -100,206 +102,326 @@ def resolve_country_folder(
 ) -> Path:
     root = Path(labels_root)
 
-    if not root.exists():
-        raise LabelCatalogError(
-            f"Nie znaleziono katalogu etykiet: {root}"
-        )
-
     if not root.is_dir():
         raise LabelCatalogError(
-            f"Ścieżka etykiet nie jest folderem: {root}"
+            "Nie znaleziono głównego folderu "
+            f"etykiet: {root}"
         )
 
-    normalized_country = normalize_name(country)
-    configured_name = COUNTRY_FOLDERS.get(normalized_country)
+    folder_name = COUNTRY_FOLDERS.get(
+        country
+    )
 
-    if configured_name is not None:
-        configured_path = root / configured_name
-
-        if configured_path.is_dir():
-            return configured_path
+    if folder_name is None:
+        supported = ", ".join(
+            COUNTRY_FOLDERS.keys()
+        )
 
         raise LabelCatalogError(
-            f"Nie znaleziono folderu państwa: {configured_path}"
+            f"Nieobsługiwane państwo: "
+            f"{country}. "
+            f"Obsługiwane państwa: "
+            f"{supported}."
         )
 
-    # Dodatkowa próba odnalezienia folderu po fragmencie nazwy.
-    candidates = [
-        path
-        for path in root.iterdir()
+    expected_path = root / folder_name
+
+    if expected_path.is_dir():
+        return expected_path
+
+    # Dodatkowe wyszukiwanie odporne na
+    # wielkość liter i polskie znaki.
+    expected_normalized = normalize_name(
+        folder_name
+    )
+
+    for candidate in root.iterdir():
         if (
-            path.is_dir()
-            and normalized_country in normalize_name(path.name)
-        )
-    ]
-
-    if len(candidates) == 1:
-        return candidates[0]
-
-    if len(candidates) > 1:
-        raise LabelCatalogError(
-            f"Znaleziono kilka folderów dla państwa {country!r}: "
-            + ", ".join(path.name for path in candidates)
-        )
+            candidate.is_dir()
+            and normalize_name(candidate.name)
+            == expected_normalized
+        ):
+            return candidate
 
     raise LabelCatalogError(
-        f"Nie skonfigurowano folderu dla państwa: {country}"
+        "Nie znaleziono folderu państwa: "
+        f"{expected_path}"
     )
 
 
 def index_product_folders(
-    country_folder: Path,
+    country_folder: str | Path,
 ) -> dict[str, Path]:
+    folder = Path(country_folder)
+
+    if not folder.is_dir():
+        raise LabelCatalogError(
+            "Nie znaleziono folderu państwa: "
+            f"{folder}"
+        )
+
     index: dict[str, Path] = {}
 
-    for path in country_folder.iterdir():
-        if not path.is_dir():
+    for candidate in folder.iterdir():
+        if not candidate.is_dir():
             continue
 
-        # Foldery techniczne nie uczestniczą w dopasowaniu.
-        if path.name.startswith("_"):
+        normalized = normalize_name(
+            candidate.name
+        )
+
+        if not normalized:
             continue
 
-        key = normalize_name(path.name)
+        if normalized in index:
+            previous = index[normalized]
 
-        if not key:
-            continue
-
-        if key in index:
             raise LabelCatalogError(
-                "Niejednoznaczne foldery produktów: "
-                f"{index[key].name!r} oraz {path.name!r}."
+                "W folderze państwa znajdują "
+                "się dwa foldery produktów "
+                "o takiej samej uproszczonej "
+                "nazwie: "
+                f"'{previous.name}' oraz "
+                f"'{candidate.name}'."
             )
 
-        index[key] = path
+        index[normalized] = candidate
 
     return index
+
+
+def _find_label_file(
+    product_folder: Path,
+    label_format: str,
+) -> Path | None:
+    expected_filename = (
+        f"{label_format}.etx"
+    )
+
+    expected_path = (
+        product_folder
+        / expected_filename
+    )
+
+    if expected_path.is_file():
+        return expected_path
+
+    expected_normalized = (
+        expected_filename.casefold()
+    )
+
+    for candidate in product_folder.iterdir():
+        if (
+            candidate.is_file()
+            and candidate.name.casefold()
+            == expected_normalized
+        ):
+            return candidate
+
+    return None
+
+
+def _build_aggregated_jobs(
+    collected_jobs: dict[
+        tuple[str, str],
+        dict,
+    ],
+) -> list[LabelJob]:
+    jobs: list[LabelJob] = []
+
+    for job_data in collected_jobs.values():
+        jobs.append(
+            LabelJob(
+                item=job_data["item"],
+                product_folder_name=(
+                    job_data[
+                        "product_folder_name"
+                    ]
+                ),
+                label_format=(
+                    job_data["label_format"]
+                ),
+                label_path=(
+                    job_data["label_path"]
+                ),
+                quantity=(
+                    job_data["quantity"]
+                ),
+            )
+        )
+
+    return sorted(
+        jobs,
+        key=lambda job: (
+            job.product_folder_name.casefold()
+        ),
+    )
 
 
 def build_print_plan(
     order: ParsedOrder,
     labels_root: str | Path,
 ) -> PrintPlan:
-    country_folder = resolve_country_folder(
-        labels_root,
-        order.country,
+    country_folder = (
+        resolve_country_folder(
+            labels_root,
+            order.country,
+        )
     )
-    product_folders = index_product_folders(country_folder)
 
-    skipped_items: list[SkippedItem] = []
-    invalid_items: list[InvalidItem] = []
+    product_folders = (
+        index_product_folders(
+            country_folder
+        )
+    )
 
-    accumulators: dict[Path, dict[str, object]] = {}
+    collected_45x45: dict[
+        tuple[str, str],
+        dict,
+    ] = {}
+
+    collected_45x110: dict[
+        tuple[str, str],
+        dict,
+    ] = {}
+
+    skipped_items: list[
+        SkippedItem
+    ] = []
+
+    invalid_items: list[
+        InvalidItem
+    ] = []
 
     for item in order.items:
-        product_key = normalize_name(
-            item.product_folder_name
+        normalized_product_name = (
+            normalize_name(
+                item.product_folder_name
+            )
         )
-        product_folder = product_folders.get(product_key)
 
+        product_folder = (
+            product_folders.get(
+                normalized_product_name
+            )
+        )
+
+        # Brak folderu oznacza, że produkt
+        # nie wymaga przeklejki. Dotyczy to
+        # np. akcesoriów i maszyn.
         if product_folder is None:
             skipped_items.append(
                 SkippedItem(
                     item=item,
                     reason=(
-                        "Brak folderu produktu w folderze państwa — "
-                        "produkt nie wymaga przeklejki albo jego nazwa "
-                        "nie została dopasowana."
+                        "Brak folderu produktu "
+                        "w katalogu etykiet – "
+                        "przeklejka nie jest "
+                        "wymagana."
                     ),
                 )
             )
             continue
 
-        if item.capacity_liters is None:
+        # Korzystamy z formatu wyliczonego
+        # wcześniej przez order_reader.
+        #
+        # Dzięki temu działają również
+        # wyjątki KIT i SET, mimo że nazwa
+        # nie zawiera pojemności.
+        label_format = item.label_format
+
+        if label_format not in {
+            "45x45",
+            "45x110",
+        }:
             invalid_items.append(
                 InvalidItem(
                     item=item,
                     error=(
-                        "Produkt ma folder etykiet, ale jego nazwa "
-                        "nie zawiera rozpoznanej pojemności."
+                        "Produkt ma folder "
+                        "etykiet, ale nie udało "
+                        "się określić formatu. "
+                        "Rozpoznawane są "
+                        "pojemności 0,2L, 0,5L, "
+                        "1L, 5L i 10L oraz "
+                        "produkty KIT i SET."
                     ),
                 )
             )
             continue
 
-        if item.label_format is None:
+        label_path = _find_label_file(
+            product_folder,
+            label_format,
+        )
+
+        if label_path is None:
             invalid_items.append(
                 InvalidItem(
                     item=item,
                     error=(
-                        "Nieobsługiwana pojemność: "
-                        f"{item.capacity_liters} L."
+                        f"W folderze "
+                        f"'{product_folder.name}' "
+                        f"brakuje pliku "
+                        f"'{label_format}.etx'."
                     ),
                 )
             )
             continue
 
-        label_path = (
-            product_folder
-            / f"{item.label_format}.etx"
-        )
-
-        if not label_path.is_file():
-            invalid_items.append(
-                InvalidItem(
-                    item=item,
-                    error=(
-                        "Brak wymaganego pliku etykiety: "
-                        f"{label_path.name}"
-                    ),
-                )
-            )
-            continue
-
-        accumulator = accumulators.setdefault(
-            label_path,
-            {
-                "product_name": item.product_name,
-                "product_folder_name": product_folder.name,
-                "label_format": item.label_format,
-                "quantity": 0,
-                "row_numbers": [],
-            },
-        )
-
-        accumulator["quantity"] = (
-            int(accumulator["quantity"]) + item.quantity
-        )
-        accumulator["row_numbers"].append(item.row_number)
-
-    jobs = [
-        LabelJob(
-            label_path=label_path,
-            product_name=str(data["product_name"]),
-            product_folder_name=str(
-                data["product_folder_name"]
+        aggregation_key = (
+            normalize_name(
+                product_folder.name
             ),
-            label_format=str(data["label_format"]),
-            quantity=int(data["quantity"]),
-            row_numbers=tuple(data["row_numbers"]),
+            label_format,
         )
-        for label_path, data in accumulators.items()
-    ]
 
-    jobs.sort(
-        key=lambda job: normalize_name(
-            job.product_folder_name
+        if label_format == "45x45":
+            destination = collected_45x45
+        else:
+            destination = collected_45x110
+
+        existing_job = destination.get(
+            aggregation_key
+        )
+
+        if existing_job is None:
+            destination[
+                aggregation_key
+            ] = {
+                "item": item,
+                "product_folder_name": (
+                    product_folder.name
+                ),
+                "label_format": (
+                    label_format
+                ),
+                "label_path": label_path,
+                "quantity": item.quantity,
+            }
+        else:
+            existing_job["quantity"] += (
+                item.quantity
+            )
+
+    jobs_45x45 = (
+        _build_aggregated_jobs(
+            collected_45x45
+        )
+    )
+
+    jobs_45x110 = (
+        _build_aggregated_jobs(
+            collected_45x110
         )
     )
 
     return PrintPlan(
         country=order.country,
         country_folder=country_folder,
-        jobs_45x45=[
-            job
-            for job in jobs
-            if job.label_format == "45x45"
-        ],
-        jobs_45x110=[
-            job
-            for job in jobs
-            if job.label_format == "45x110"
-        ],
+        jobs_45x45=jobs_45x45,
+        jobs_45x110=jobs_45x110,
         skipped_items=skipped_items,
         invalid_items=invalid_items,
     )

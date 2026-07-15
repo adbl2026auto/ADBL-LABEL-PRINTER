@@ -34,3 +34,6 @@ Thumbs.db
 
 
 application_data/
+build/
+dist/
+*.pyc

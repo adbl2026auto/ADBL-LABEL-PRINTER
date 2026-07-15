@@ -79,11 +79,14 @@ async function apiRequest(url, options = {}) {
     }
 
     if (!response.ok || data.ok === false) {
-        throw new Error(
-            data.error ||
-            `Błąd serwera (${response.status}).`
-        );
-    }
+    const error = new Error(
+        data.error ||
+        `Błąd serwera (${response.status}).`
+    );
+
+    error.responseData = data;
+    throw error;
+}
 
     return data;
 }
@@ -214,7 +217,7 @@ function renderPlan(plan) {
 
     planSection.hidden = false;
     resetButton.hidden = false;
-    print45Button.disabled = invalid.length > 0;
+    print45Button.disabled = plan.job_count === 0;
 }
 
 
@@ -635,10 +638,21 @@ uploadForm.addEventListener("submit", async event => {
 
         startPolling();
     } catch (error) {
-        showMessage(error.message, "error");
-    } finally {
-        setLoading(analyzeButton, false);
+    const errorPlan = error.responseData?.plan;
+
+    if (errorPlan) {
+        renderPlan(errorPlan);
+
+        invalidDetails.hidden = false;
+        invalidDetails.open = true;
+
+        print45Button.disabled = true;
     }
+
+    showMessage(error.message, "error");
+} finally {
+    setLoading(analyzeButton, false);
+}
 });
 
 

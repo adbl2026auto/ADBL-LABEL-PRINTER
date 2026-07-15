@@ -74,7 +74,11 @@ def _job_to_dict(job) -> dict[str, Any]:
             "product_folder_name",
             "",
         ),
-        "quantity": getattr(job, "quantity", 0),
+        "quantity": getattr(
+            job,
+            "quantity",
+            0,
+        ),
         "format": getattr(
             job,
             "label_format",
@@ -91,7 +95,9 @@ def _job_to_dict(job) -> dict[str, Any]:
     }
 
 
-def _skipped_to_dict(skipped) -> dict[str, Any]:
+def _skipped_to_dict(
+    skipped,
+) -> dict[str, Any]:
     item = getattr(skipped, "item", None)
 
     return {
@@ -116,7 +122,9 @@ def _skipped_to_dict(skipped) -> dict[str, Any]:
     }
 
 
-def _invalid_to_dict(invalid) -> dict[str, Any]:
+def _invalid_to_dict(
+    invalid,
+) -> dict[str, Any]:
     item = getattr(invalid, "item", None)
 
     return {
@@ -180,6 +188,11 @@ def _plan_to_dict(plan) -> dict[str, Any]:
         ),
         "skipped_items": skipped,
         "invalid_items": invalid,
+        "invalid_count": len(invalid),
+        "has_warnings": bool(invalid),
+        "can_print": bool(
+            jobs_45 or jobs_110
+        ),
     }
 
 
@@ -192,11 +205,15 @@ def _find_etilabel() -> Path:
     candidates: list[Path] = []
 
     if configured_path:
-        candidates.append(Path(configured_path))
+        candidates.append(
+            Path(configured_path)
+        )
 
     candidates.extend(
         [
-            Path(r"C:\Etilabel\Etilabel.exe"),
+            Path(
+                r"C:\Etilabel\Etilabel.exe"
+            ),
             Path(
                 r"C:\Program Files"
                 r"\Etilabel\Etilabel.exe"
@@ -225,7 +242,9 @@ def _printer_snapshot() -> dict[str, Any]:
 
         return {
             "ok": True,
-            "found": result.selected is not None,
+            "found": (
+                result.selected is not None
+            ),
             "selected": (
                 result.selected.to_dict()
                 if result.selected
@@ -238,7 +257,8 @@ def _printer_snapshot() -> dict[str, Any]:
             ],
             "all_printers": [
                 printer.to_dict()
-                for printer in result.all_printers
+                for printer
+                in result.all_printers
             ],
             "error": None,
         }
@@ -263,7 +283,8 @@ def _require_printer_for_production() -> None:
     if printer.has_warning:
         raise PrinterDetectionError(
             f"Drukarka '{printer.name}' "
-            f"nie jest gotowa: {printer.warning}."
+            f"nie jest gotowa: "
+            f"{printer.warning}."
         )
 
 
@@ -279,11 +300,15 @@ def _session_snapshot() -> dict[str, Any]:
             "error": error,
             "worker_running": False,
             "test_mode": bool(
-                current_app.config["TEST_MODE"]
+                current_app.config[
+                    "TEST_MODE"
+                ]
             ),
         }
 
-    snapshot = _serialize(session.snapshot())
+    snapshot = _serialize(
+        session.snapshot()
+    )
 
     snapshot["error"] = (
         snapshot.get("error") or error
@@ -325,7 +350,8 @@ def _run_worker(action: str) -> None:
 
         else:
             raise RuntimeError(
-                f"Nieznana operacja: {action}"
+                f"Nieznana operacja: "
+                f"{action}"
             )
 
         with _state_lock:
@@ -364,12 +390,16 @@ def _start_worker(action: str) -> None:
 def _safe_uploaded_filename(
     uploaded_name: str,
 ) -> str:
-    normalized_name = uploaded_name.replace(
-        "\\",
-        "/",
+    normalized_name = (
+        uploaded_name.replace(
+            "\\",
+            "/",
+        )
     )
 
-    filename = Path(normalized_name).name
+    filename = Path(
+        normalized_name
+    ).name
 
     if not filename:
         raise RuntimeError(
@@ -379,16 +409,35 @@ def _safe_uploaded_filename(
     return filename
 
 
+def _delete_uploaded_file(
+    file_path: Path | None,
+) -> None:
+    if file_path is None:
+        return
+
+    try:
+        file_path.unlink(
+            missing_ok=True
+        )
+    except OSError:
+        pass
+
+
 @main.get("/")
 def index():
-    return render_template("index.html")
+    return render_template(
+        "index.html"
+    )
 
 
 @main.get("/api/config")
 def get_config():
     try:
-        etilabel_path = str(_find_etilabel())
+        etilabel_path = str(
+            _find_etilabel()
+        )
         etilabel_found = True
+
     except RuntimeError:
         etilabel_path = ""
         etilabel_found = False
@@ -396,15 +445,25 @@ def get_config():
     return jsonify(
         {
             "ok": True,
-            "labels_root": current_app.config[
-                "LABELS_ROOT"
-            ],
-            "etilabel_found": etilabel_found,
-            "etilabel_path": etilabel_path,
-            "test_mode": bool(
-                current_app.config["TEST_MODE"]
+            "labels_root": (
+                current_app.config[
+                    "LABELS_ROOT"
+                ]
             ),
-            "printer": _printer_snapshot(),
+            "etilabel_found": (
+                etilabel_found
+            ),
+            "etilabel_path": (
+                etilabel_path
+            ),
+            "test_mode": bool(
+                current_app.config[
+                    "TEST_MODE"
+                ]
+            ),
+            "printer": (
+                _printer_snapshot()
+            ),
         }
     )
 
@@ -415,9 +474,13 @@ def get_printer():
         {
             "ok": True,
             "test_mode": bool(
-                current_app.config["TEST_MODE"]
+                current_app.config[
+                    "TEST_MODE"
+                ]
             ),
-            "printer": _printer_snapshot(),
+            "printer": (
+                _printer_snapshot()
+            ),
         }
     )
 
@@ -429,13 +492,17 @@ def analyze_order():
     global _current_order_path
     global _last_error
 
-    uploaded_file = request.files.get("file")
+    uploaded_file = request.files.get(
+        "file"
+    )
 
     if uploaded_file is None:
         return jsonify(
             {
                 "ok": False,
-                "error": "Nie wybrano pliku.",
+                "error": (
+                    "Nie wybrano pliku."
+                ),
             }
         ), 400
 
@@ -443,7 +510,9 @@ def analyze_order():
         return jsonify(
             {
                 "ok": False,
-                "error": "Plik nie ma nazwy.",
+                "error": (
+                    "Plik nie ma nazwy."
+                ),
             }
         ), 400
 
@@ -451,18 +520,21 @@ def analyze_order():
         uploaded_file.filename
     ).suffix.lower()
 
-    if extension not in {".xlsx", ".xlsm"}:
+    if extension not in {
+        ".xlsx",
+        ".xlsm",
+    }:
         return jsonify(
             {
                 "ok": False,
                 "error": (
-                    "Obsługiwane są tylko pliki "
-                    ".xlsx oraz .xlsm."
+                    "Obsługiwane są tylko "
+                    "pliki .xlsx oraz .xlsm."
                 ),
             }
         ), 400
 
-    destination = None
+    destination: Path | None = None
 
     try:
         original_filename = (
@@ -485,60 +557,108 @@ def analyze_order():
             / unique_name
         )
 
-        uploaded_file.save(destination)
+        uploaded_file.save(
+            destination
+        )
 
-        order = read_order(destination)
+        order = read_order(
+            destination
+        )
 
         plan = build_print_plan(
             order,
-            current_app.config["LABELS_ROOT"],
+            current_app.config[
+                "LABELS_ROOT"
+            ],
         )
 
-        if plan.invalid_items:
+        plan_data = _plan_to_dict(
+            plan
+        )
+
+        # Błędne pozycje nie blokują całego
+        # zamówienia. Zostaną pokazane jako
+        # ostrzeżenia i pominięte przy druku.
+        #
+        # Druk blokujemy wyłącznie wtedy,
+        # gdy nie ma ani jednego poprawnego
+        # zadania ETX.
+        if not plan_data["can_print"]:
+            _delete_uploaded_file(
+                destination
+            )
+
             return jsonify(
                 {
                     "ok": False,
                     "error": (
-                        "Zamówienie zawiera pozycje, "
-                        "których nie można przygotować "
-                        "do druku."
+                        "W zamówieniu nie "
+                        "znaleziono żadnej "
+                        "prawidłowej etykiety "
+                        "do wydrukowania."
                     ),
-                    "plan": _plan_to_dict(plan),
+                    "plan": plan_data,
                 }
             ), 422
 
-        etilabel_path = _find_etilabel()
+        etilabel_path = (
+            _find_etilabel()
+        )
 
-        controller = EtilabelController(
-            etilabel_path
+        controller = (
+            EtilabelController(
+                etilabel_path
+            )
         )
 
         session = PrintSession(
             plan,
             controller,
             test_mode=bool(
-                current_app.config["TEST_MODE"]
+                current_app.config[
+                    "TEST_MODE"
+                ]
             ),
         )
 
         with _state_lock:
-            old_order_path = _current_order_path
+            old_order_path = (
+                _current_order_path
+            )
 
             _current_plan = plan
             _current_session = session
-            _current_order_path = destination
+            _current_order_path = (
+                destination
+            )
             _last_error = None
 
         if (
             old_order_path
-            and old_order_path != destination
+            and old_order_path
+            != destination
         ):
-            try:
-                old_order_path.unlink(
-                    missing_ok=True
-                )
-            except OSError:
-                pass
+            _delete_uploaded_file(
+                old_order_path
+            )
+
+        warning_count = len(
+            plan.invalid_items
+        )
+
+        if warning_count:
+            response_message = (
+                "Zamówienie przeanalizowano. "
+                f"{warning_count} pozycji "
+                "zostanie pominiętych z powodu "
+                "błędów. Pozostałe etykiety "
+                "można wydrukować."
+            )
+        else:
+            response_message = (
+                "Zamówienie zostało poprawnie "
+                "przeanalizowane."
+            )
 
         return jsonify(
             {
@@ -546,20 +666,27 @@ def analyze_order():
                 "filename": (
                     uploaded_file.filename
                 ),
-                "plan": _plan_to_dict(plan),
-                "session": _session_snapshot(),
-                "printer": _printer_snapshot(),
+                "message": response_message,
+                "has_warnings": bool(
+                    warning_count
+                ),
+                "warning_count": (
+                    warning_count
+                ),
+                "plan": plan_data,
+                "session": (
+                    _session_snapshot()
+                ),
+                "printer": (
+                    _printer_snapshot()
+                ),
             }
         )
 
     except Exception as exc:
-        if destination is not None:
-            try:
-                destination.unlink(
-                    missing_ok=True
-                )
-            except OSError:
-                pass
+        _delete_uploaded_file(
+            destination
+        )
 
         return jsonify(
             {
@@ -604,7 +731,8 @@ def print_45x45():
         {
             "ok": True,
             "message": (
-                "Rozpoczęto druk etykiet 45x45."
+                "Rozpoczęto druk "
+                "etykiet 45x45."
             ),
         }
     ), 202
@@ -638,11 +766,13 @@ def print_45x110():
             {
                 "ok": False,
                 "error": (
-                    "Druk 45x110 można rozpocząć "
-                    "dopiero po zakończeniu etapu "
-                    "45x45."
+                    "Druk 45x110 można "
+                    "rozpocząć dopiero po "
+                    "zakończeniu etapu 45x45."
                 ),
-                "status": snapshot.get("status"),
+                "status": snapshot.get(
+                    "status"
+                ),
             }
         ), 409
 
@@ -665,7 +795,8 @@ def print_45x110():
         {
             "ok": True,
             "message": (
-                "Rozpoczęto druk etykiet 45x110."
+                "Rozpoczęto druk "
+                "etykiet 45x110."
             ),
         }
     ), 202
@@ -681,7 +812,8 @@ def retry_failed_print():
             {
                 "ok": False,
                 "error": (
-                    "Nie ma aktywnego zamówienia."
+                    "Nie ma aktywnego "
+                    "zamówienia."
                 ),
             }
         ), 400
@@ -690,7 +822,10 @@ def retry_failed_print():
         session.snapshot()
     )
 
-    if snapshot.get("status") != "failed":
+    if (
+        snapshot.get("status")
+        != "failed"
+    ):
         return jsonify(
             {
                 "ok": False,
@@ -737,7 +872,8 @@ def abort_print():
             {
                 "ok": False,
                 "error": (
-                    "Nie ma aktywnego zamówienia."
+                    "Nie ma aktywnego "
+                    "zamówienia."
                 ),
             }
         ), 400
@@ -757,9 +893,12 @@ def abort_print():
         {
             "ok": True,
             "message": (
-                "Zamówienie zostało przerwane."
+                "Zamówienie zostało "
+                "przerwane."
             ),
-            "session": _session_snapshot(),
+            "session": (
+                _session_snapshot()
+            ),
         }
     )
 
@@ -771,11 +910,15 @@ def get_status():
 
     response = {
         "ok": True,
-        "session": _session_snapshot(),
+        "session": (
+            _session_snapshot()
+        ),
     }
 
     if plan is not None:
-        response["plan"] = _plan_to_dict(plan)
+        response["plan"] = (
+            _plan_to_dict(plan)
+        )
 
     return jsonify(response)
 
@@ -796,25 +939,26 @@ def reset_session():
                 {
                     "ok": False,
                     "error": (
-                        "Nie można wyczyścić sesji "
-                        "podczas drukowania."
+                        "Nie można wyczyścić "
+                        "sesji podczas "
+                        "drukowania."
                     ),
                 }
             ), 409
 
-        old_order_path = _current_order_path
+        old_order_path = (
+            _current_order_path
+        )
 
         _current_plan = None
         _current_session = None
         _current_order_path = None
         _last_error = None
 
-    if old_order_path:
-        try:
-            old_order_path.unlink(
-                missing_ok=True
-            )
-        except OSError:
-            pass
+    _delete_uploaded_file(
+        old_order_path
+    )
 
-    return jsonify({"ok": True})
+    return jsonify(
+        {"ok": True}
+    )
