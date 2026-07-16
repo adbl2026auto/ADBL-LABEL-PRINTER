@@ -23,6 +23,18 @@ COUNTRY_FOLDERS = {
     "WŁOCHY": "Włoski IT",
 }
 
+# Aliasy wskazują istniejące foldery tylko
+# wtedy, gdy nie ma dopasowania dokładnego.
+# Nie zmieniają nazw produktów ani folderów.
+PRODUCT_FOLDER_ALIASES = {
+    "Hybrid Glass Cleaner": "Hybrid Glass",
+    "PRO Slip": "Slippy",
+    "Rinseless Shampoo": "Rinsless shampoo",
+    "Tar Remover Thixotropic": (
+        "Tar Remover Tixotropic"
+    ),
+}
+
 
 class LabelCatalogError(RuntimeError):
     pass
@@ -190,6 +202,43 @@ def index_product_folders(
     return index
 
 
+def _resolve_product_folder(
+    product_folders: dict[str, Path],
+    product_folder_name: str,
+) -> Path | None:
+    normalized_name = normalize_name(
+        product_folder_name
+    )
+
+    # Dopasowanie dokładne ma zawsze
+    # pierwszeństwo przed aliasem.
+    direct_match = product_folders.get(
+        normalized_name
+    )
+
+    if direct_match is not None:
+        return direct_match
+
+    normalized_aliases = {
+        normalize_name(source_name): (
+            normalize_name(target_folder)
+        )
+        for source_name, target_folder
+        in PRODUCT_FOLDER_ALIASES.items()
+    }
+
+    alias_target = normalized_aliases.get(
+        normalized_name
+    )
+
+    if alias_target is None:
+        return None
+
+    return product_folders.get(
+        alias_target
+    )
+
+
 def _find_label_file(
     product_folder: Path,
     label_format: str,
@@ -301,8 +350,9 @@ def build_print_plan(
         )
 
         product_folder = (
-            product_folders.get(
-                normalized_product_name
+            _resolve_product_folder(
+                product_folders,
+                item.product_folder_name,
             )
         )
 

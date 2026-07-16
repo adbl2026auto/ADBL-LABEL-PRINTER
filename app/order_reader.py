@@ -72,17 +72,13 @@ CAPACITY_PATTERN = re.compile(
 )
 
 
-CAPACITY_AT_END_PATTERN = re.compile(
-    r"\s+"
-    r"\d+(?:[.,]\d+)?"
-    r"\s*(?:ml|l)"
-    r"\s*$",
+KIT_OR_SET_PATTERN = re.compile(
+    r"\b(?:KIT|SET)\b",
     flags=re.IGNORECASE,
 )
 
-
-KIT_OR_SET_PATTERN = re.compile(
-    r"\b(?:KIT|SET)\b",
+SPIRITS_PATTERN = re.compile(
+    r"\bSPIRITS\b",
     flags=re.IGNORECASE,
 )
 
@@ -217,6 +213,14 @@ def select_label_format(
     capacity_liters: float | None,
     product_name: str = "",
 ) -> str | None:
+    # Cała linia SPIRITS ma wyłącznie
+    # etykiety 45x45, niezależnie od
+    # pojemności podanej w nazwie.
+    if SPIRITS_PATTERN.search(
+        product_name
+    ):
+        return "45x45"
+
     # Produkty zawierające osobne słowo
     # KIT albo SET zawsze otrzymują format
     # 45x110, nawet jeśli nazwa nie zawiera
@@ -277,8 +281,11 @@ def extract_product_folder_name(
         flags=re.IGNORECASE,
     )
 
-    name = CAPACITY_AT_END_PATTERN.sub(
-        "",
+    # Pojemność może występować w dowolnym
+    # miejscu nazwy, np.:
+    # "Interior QD 0,5L UNLIMITED".
+    name = CAPACITY_PATTERN.sub(
+        " ",
         name,
     )
 
