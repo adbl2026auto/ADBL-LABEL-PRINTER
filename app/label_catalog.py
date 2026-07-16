@@ -15,12 +15,27 @@ COUNTRY_FOLDERS = {
     "BUŁGARIA": "Bułgarski BG",
     "CZECHY": "Czeski CS",
     "FINLANDIA": "Fiński FI",
+    "FRANCJA": "Francja FR",
+    "HOLANDIA": "Holandia NL",
     "LITWA": "Litewski LT",
     "PORTUGALIA": "Portugalski PT",
     "RUMUNIA": "Rumunia RO",
     "SŁOWENIA": "Słoweński SL",
     "WĘGRY": "Węgierski HU",
     "WŁOCHY": "Włoski IT",
+}
+
+
+# Aliasy wskazują istniejące foldery tylko
+# wtedy, gdy nie ma dopasowania dokładnego.
+# Nie zmieniają nazw produktów ani folderów.
+PRODUCT_FOLDER_ALIASES = {
+    "Hybrid Glass Cleaner": "Hybrid Glass",
+    "PRO Slip": "Slippy",
+    "Rinseless Shampoo": "Rinsless shampoo",
+    "Tar Remover Thixotropic": (
+        "Tar Remover Tixotropic"
+    ),
 }
 
 
@@ -190,6 +205,43 @@ def index_product_folders(
     return index
 
 
+def _resolve_product_folder(
+    product_folders: dict[str, Path],
+    product_folder_name: str,
+) -> Path | None:
+    normalized_name = normalize_name(
+        product_folder_name
+    )
+
+    # Dopasowanie dokładne ma zawsze
+    # pierwszeństwo przed aliasem.
+    direct_match = product_folders.get(
+        normalized_name
+    )
+
+    if direct_match is not None:
+        return direct_match
+
+    normalized_aliases = {
+        normalize_name(source_name): (
+            normalize_name(target_folder)
+        )
+        for source_name, target_folder
+        in PRODUCT_FOLDER_ALIASES.items()
+    }
+
+    alias_target = normalized_aliases.get(
+        normalized_name
+    )
+
+    if alias_target is None:
+        return None
+
+    return product_folders.get(
+        alias_target
+    )
+
+
 def _find_label_file(
     product_folder: Path,
     label_format: str,
@@ -294,15 +346,10 @@ def build_print_plan(
     ] = []
 
     for item in order.items:
-        normalized_product_name = (
-            normalize_name(
-                item.product_folder_name
-            )
-        )
-
         product_folder = (
-            product_folders.get(
-                normalized_product_name
+            _resolve_product_folder(
+                product_folders,
+                item.product_folder_name,
             )
         )
 
@@ -327,8 +374,7 @@ def build_print_plan(
         # wcześniej przez order_reader.
         #
         # Dzięki temu działają również
-        # wyjątki KIT i SET, mimo że nazwa
-        # nie zawiera pojemności.
+        # wyjątki SPIRITS, KIT i SET.
         label_format = item.label_format
 
         if label_format not in {
@@ -344,8 +390,8 @@ def build_print_plan(
                         "się określić formatu. "
                         "Rozpoznawane są "
                         "pojemności 0,2L, 0,5L, "
-                        "1L, 5L i 10L oraz "
-                        "produkty KIT i SET."
+                        "1L, 5L i 10L, produkty "
+                        "KIT i SET oraz SPIRITS."
                     ),
                 )
             )

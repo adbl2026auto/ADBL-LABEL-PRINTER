@@ -17,23 +17,40 @@ class OrderReadError(RuntimeError):
 COUNTRY_SUFFIX_ALIASES = {
     "bulgaria": "BUŁGARIA",
     "bulgaria bg": "BUŁGARIA",
+
     "czechy": "CZECHY",
     "republika czeska": "CZECHY",
     "czech republic": "CZECHY",
+
     "finlandia": "FINLANDIA",
+
+    "francja": "FRANCJA",
+    "francja fr": "FRANCJA",
+    "france": "FRANCJA",
+
+    "holandia": "HOLANDIA",
+    "holandia nl": "HOLANDIA",
+    "niderlandy": "HOLANDIA",
+    "netherlands": "HOLANDIA",
+    "holland": "HOLANDIA",
+
     "litwa": "LITWA",
+
     "portugalia": "PORTUGALIA",
+
     "rumunia": "RUMUNIA",
     "romania": "RUMUNIA",
+
     "slowenia": "SŁOWENIA",
     "slovenia": "SŁOWENIA",
+
     "wegry": "WĘGRY",
     "hungary": "WĘGRY",
+
     "wlochy": "WŁOCHY",
     "italia": "WŁOCHY",
     "italy": "WŁOCHY",
 }
-
 
 PRODUCT_HEADER_ALIASES = {
     "towarnazwa",
@@ -72,17 +89,19 @@ CAPACITY_PATTERN = re.compile(
 )
 
 
-CAPACITY_AT_END_PATTERN = re.compile(
-    r"\s+"
-    r"\d+(?:[.,]\d+)?"
-    r"\s*(?:ml|l)"
-    r"\s*$",
+KIT_OR_SET_PATTERN = re.compile(
+    r"\b(?:KIT|SET)\b",
     flags=re.IGNORECASE,
 )
 
 
-KIT_OR_SET_PATTERN = re.compile(
-    r"\b(?:KIT|SET)\b",
+SPIRITS_PATTERN = re.compile(
+    r"\bSPIRITS\b",
+    flags=re.IGNORECASE,
+)
+
+WET_COAT_PATTERN = re.compile(
+    r"\bWET\s*COAT\b",
     flags=re.IGNORECASE,
 )
 
@@ -164,10 +183,11 @@ def extract_country(
             return canonical_country
 
     supported_countries = (
-        "BUŁGARIA, CZECHY, FINLANDIA, "
-        "LITWA, PORTUGALIA, RUMUNIA, "
-        "SŁOWENIA, WĘGRY lub WŁOCHY"
-    )
+    "BUŁGARIA, CZECHY, FINLANDIA, "
+    "FRANCJA, HOLANDIA, LITWA, "
+    "PORTUGALIA, RUMUNIA, SŁOWENIA, "
+    "WĘGRY lub WŁOCHY"
+)
 
     raise OrderReadError(
         "Nie udało się rozpoznać państwa "
@@ -217,6 +237,15 @@ def select_label_format(
     capacity_liters: float | None,
     product_name: str = "",
 ) -> str | None:
+    # Produkty SPIRITS mają wyłącznie
+    # etykiety 45x45, niezależnie od
+    # pojemności podanej w nazwie.
+    if (
+        SPIRITS_PATTERN.search(product_name)
+        or WET_COAT_PATTERN.search(product_name)
+):
+        return "45x45"
+
     # Produkty zawierające osobne słowo
     # KIT albo SET zawsze otrzymują format
     # 45x110, nawet jeśli nazwa nie zawiera
@@ -277,8 +306,11 @@ def extract_product_folder_name(
         flags=re.IGNORECASE,
     )
 
-    name = CAPACITY_AT_END_PATTERN.sub(
-        "",
+    # Pojemność może występować w dowolnym
+    # miejscu nazwy, np.:
+    # "Interior QD 0,5L UNLIMITED".
+    name = CAPACITY_PATTERN.sub(
+        " ",
         name,
     )
 
