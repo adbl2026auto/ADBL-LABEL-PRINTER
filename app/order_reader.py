@@ -105,6 +105,10 @@ WET_COAT_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+ROLLER_PATTERN = re.compile(
+    r"\bROLLER\b",
+    flags=re.IGNORECASE,
+)
 
 @dataclass(frozen=True)
 class OrderItem:
@@ -305,6 +309,16 @@ def extract_product_folder_name(
         name,
         flags=re.IGNORECASE,
     )
+
+    # Dla produktów zawierających słowo
+    # Roller nazwa folderu odpowiada
+    # wszystkiemu, co znajduje się po Roller.
+    roller_match = ROLLER_PATTERN.search(name)
+
+    if roller_match is not None:
+        name = name[roller_match.end():]
+
+    # Pojemność może występować w dowolnym
 
     # Pojemność może występować w dowolnym
     # miejscu nazwy, np.:

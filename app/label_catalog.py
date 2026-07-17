@@ -36,6 +36,9 @@ PRODUCT_FOLDER_ALIASES = {
     "Tar Remover Thixotropic": (
         "Tar Remover Tixotropic"
     ),
+        "Magic Mist Goji Berries Fusion": (
+        "Magic Mist Goji Berries"
+    ),
 }
 
 
