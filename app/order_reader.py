@@ -17,40 +17,31 @@ class OrderReadError(RuntimeError):
 COUNTRY_SUFFIX_ALIASES = {
     "bulgaria": "BUŁGARIA",
     "bulgaria bg": "BUŁGARIA",
-
     "czechy": "CZECHY",
     "republika czeska": "CZECHY",
     "czech republic": "CZECHY",
-
     "finlandia": "FINLANDIA",
-
     "francja": "FRANCJA",
     "francja fr": "FRANCJA",
     "france": "FRANCJA",
-
     "holandia": "HOLANDIA",
     "holandia nl": "HOLANDIA",
     "niderlandy": "HOLANDIA",
     "netherlands": "HOLANDIA",
     "holland": "HOLANDIA",
-
     "litwa": "LITWA",
-
     "portugalia": "PORTUGALIA",
-
     "rumunia": "RUMUNIA",
     "romania": "RUMUNIA",
-
     "slowenia": "SŁOWENIA",
     "slovenia": "SŁOWENIA",
-
     "wegry": "WĘGRY",
     "hungary": "WĘGRY",
-
     "wlochy": "WŁOCHY",
     "italia": "WŁOCHY",
     "italy": "WŁOCHY",
 }
+
 
 PRODUCT_HEADER_ALIASES = {
     "towarnazwa",
@@ -94,21 +85,28 @@ KIT_OR_SET_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
-
 SPIRITS_PATTERN = re.compile(
     r"\bSPIRITS\b",
     flags=re.IGNORECASE,
 )
+
 
 WET_COAT_PATTERN = re.compile(
     r"\bWET\s*COAT\b",
     flags=re.IGNORECASE,
 )
 
+
 ROLLER_PATTERN = re.compile(
     r"\bROLLER\b",
     flags=re.IGNORECASE,
 )
+
+
+PRODUCT_SEPARATOR_PATTERN = re.compile(
+    r"\s*\+\s*"
+)
+
 
 @dataclass(frozen=True)
 class OrderItem:
@@ -187,11 +185,11 @@ def extract_country(
             return canonical_country
 
     supported_countries = (
-    "BUŁGARIA, CZECHY, FINLANDIA, "
-    "FRANCJA, HOLANDIA, LITWA, "
-    "PORTUGALIA, RUMUNIA, SŁOWENIA, "
-    "WĘGRY lub WŁOCHY"
-)
+        "BUŁGARIA, CZECHY, FINLANDIA, "
+        "FRANCJA, HOLANDIA, LITWA, "
+        "PORTUGALIA, RUMUNIA, SŁOWENIA, "
+        "WĘGRY lub WŁOCHY"
+    )
 
     raise OrderReadError(
         "Nie udało się rozpoznać państwa "
@@ -201,6 +199,24 @@ def extract_country(
         f"Obsługiwane państwa: "
         f"{supported_countries}."
     )
+
+
+def split_product_components(
+    product_name: str,
+) -> list[str]:
+    components = [
+        component.strip()
+        for component
+        in PRODUCT_SEPARATOR_PATTERN.split(
+            str(product_name)
+        )
+        if component.strip()
+    ]
+
+    if components:
+        return components
+
+    return [str(product_name).strip()]
 
 
 def extract_capacity_liters(
@@ -241,13 +257,13 @@ def select_label_format(
     capacity_liters: float | None,
     product_name: str = "",
 ) -> str | None:
-    # Produkty SPIRITS mają wyłącznie
+    # Cała linia SPIRITS ma wyłącznie
     # etykiety 45x45, niezależnie od
     # pojemności podanej w nazwie.
     if (
         SPIRITS_PATTERN.search(product_name)
         or WET_COAT_PATTERN.search(product_name)
-):
+    ):
         return "45x45"
 
     # Produkty zawierające osobne słowo
@@ -311,14 +327,12 @@ def extract_product_folder_name(
     )
 
     # Dla produktów zawierających słowo
-    # Roller nazwa folderu odpowiada
-    # wszystkiemu, co znajduje się po Roller.
+    # Roller folder odpowiada wszystkiemu,
+    # co znajduje się po słowie Roller.
     roller_match = ROLLER_PATTERN.search(name)
 
     if roller_match is not None:
         name = name[roller_match.end():]
-
-    # Pojemność może występować w dowolnym
 
     # Pojemność może występować w dowolnym
     # miejscu nazwy, np.:
@@ -618,44 +632,57 @@ def read_order(
                     )
                 )
 
-            capacity_liters = (
-                extract_capacity_liters(
+            product_components = (
+                split_product_components(
                     product_name
                 )
             )
 
-            label_format = (
-                select_label_format(
-                    capacity_liters,
-                    product_name,
+            # Każdy fragment rozdzielony
+            # znakiem + jest osobnym produktem.
+            # Wszystkie produkty zestawu mają
+            # ilość równą liczbie zestawów.
+            for component_name in (
+                product_components
+            ):
+                capacity_liters = (
+                    extract_capacity_liters(
+                        component_name
+                    )
                 )
-            )
 
-            product_folder_name = (
-                extract_product_folder_name(
-                    product_name
+                label_format = (
+                    select_label_format(
+                        capacity_liters,
+                        component_name,
+                    )
                 )
-            )
 
-            items.append(
-                OrderItem(
-                    row_number=row_number,
-                    product_name=product_name,
-                    quantity=quantity,
-                    capacity_liters=(
-                        capacity_liters
-                    ),
-                    label_format=(
-                        label_format
-                    ),
-                    product_folder_name=(
-                        product_folder_name
-                    ),
-                    catalog_number=(
-                        catalog_number
-                    ),
+                product_folder_name = (
+                    extract_product_folder_name(
+                        component_name
+                    )
                 )
-            )
+
+                items.append(
+                    OrderItem(
+                        row_number=row_number,
+                        product_name=component_name,
+                        quantity=quantity,
+                        capacity_liters=(
+                            capacity_liters
+                        ),
+                        label_format=(
+                            label_format
+                        ),
+                        product_folder_name=(
+                            product_folder_name
+                        ),
+                        catalog_number=(
+                            catalog_number
+                        ),
+                    )
+                )
 
         if not items:
             raise OrderReadError(
