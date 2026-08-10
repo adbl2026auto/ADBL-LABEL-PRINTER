@@ -132,6 +132,11 @@ def _normalize_text(value: Any) -> str:
         str(value or "")
         .strip()
         .casefold()
+        .translate(
+            str.maketrans({
+                "ł": "l",
+            })
+        )
     )
 
     decomposed = unicodedata.normalize(
